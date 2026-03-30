@@ -1,0 +1,36 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE and Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Crash Logs and Output
+logs/
+*.log
+
+# Project specific data output
+*_Origin_Plot_Data.xlsx
+*_Statistics_Report.xlsx
+
+# Numba cache
+__numba_cache__/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
