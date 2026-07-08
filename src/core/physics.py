@@ -241,6 +241,9 @@ class CrackPhysicsEngine:
         if image_zone is None or not np.any(image_zone):
             damage_zone = strain_zone | internal_nans
             source = "strain_only"
+        elif self.fusion_mode in {"strain_only", "strain"}:
+            damage_zone = strain_zone | internal_nans
+            source = "strain_only"
         elif self.fusion_mode in {"image_only", "image"}:
             damage_zone = image_zone | internal_nans
             source = "image_only"
@@ -250,7 +253,7 @@ class CrackPhysicsEngine:
         elif self.fusion_mode in {"image_near_strain", "supported_image"}:
             support = morphology.binary_dilation(strain_zone, morphology.disk(max(1, self.image_dilation_radius)))
             damage_zone = (strain_zone | (image_zone & support)) | internal_nans
-            source = "strain_or_supported_image"
+            source = "image_near_strain"
         else:
             # Default: union. Thin ECC cracks are easy to miss in one modality.
             # Union catches more; downstream COD/length/COD-floor filters do the cleanup.
