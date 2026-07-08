@@ -1,63 +1,57 @@
 import logging
-import numpy as np
-from numpy.typing import NDArray
 from dataclasses import dataclass
 from typing import Optional
 
-# NOTE: 模块级日志配置
+import numpy as np
+from numpy.typing import NDArray
+
 logger = logging.getLogger(__name__)
 
 
-# 🌟 核心升级：同时开启 slots=True 与 frozen=True。
-# slots 负责榨干内存开销，frozen 负责从语法层面上阻断任何下游对物理场源数据的非法篡改。
 @dataclass(slots=True, frozen=True)
 class FrameData:
-    """
-    数据层：单帧统一标准数据结构。
-    用于在 IO 层、物理引擎层和统计层之间安全地流转物理场与宏观力学信号。
-    """
-    frame_id: int
-    u_map: NDArray[np.float64]    # X 轴位移场矩阵 (双精度)
-    exx_map: NDArray[np.float64]  # X 轴主应变场矩阵 (双精度)
-    mask: NDArray[np.bool_]       # 试件有效区域掩码 (布尔型)
-    ratio: float                  # 空间标定系数 (mm/pixel)
-    time_s: float                 # 当前帧绝对或相对时间戳
+    """Validated data for one DIC frame."""
 
-    # 宏观力学信号 (允许为空，以兼容只有单源 DIC 图像而无 MTS 数据的回溯测试)
+    frame_id: int
+    u_map: NDArray[np.float64]
+    exx_map: NDArray[np.float64]
+    mask: NDArray[np.bool_]
+    ratio: float
+    time_s: float
+    v_map: Optional[NDArray[np.float64]] = None
     load_n: Optional[float] = None
     stress_mpa: Optional[float] = None
 
     def __post_init__(self) -> None:
-        """
-        防御性编程：在对象实例化的瞬间对物理域和边界条件进行硬阻断，
-        严防下游发生难以溯源的 Numpy Broadcasting 报错。
-        """
-        # 1. 物理标量越界防御
         if self.frame_id < 0:
-            raise ValueError(f"非法 Frame ID: {self.frame_id}。帧序号必须为非负整数。")
+            raise ValueError(f"Invalid frame_id: {self.frame_id}.")
         if self.ratio <= 0.0:
-            raise ValueError(f"非法 Ratio: {self.ratio}。像素换算比必须严格大于零。")
-
-        # 2. 矩阵空值防御
+            raise ValueError(f"Invalid ratio: {self.ratio}. It must be greater than zero.")
         if self.u_map is None or self.exx_map is None or self.mask is None:
-            raise ValueError(f"Frame {self.frame_id} 拒绝构造：核心物理场矩阵不可为 None。")
-
-        # 3. 空间拓扑一致性防御 (新增严格的 2D 校验)
-        if self.u_map.ndim != 2:
-            raise ValueError(f"Frame {self.frame_id} 空间拓扑异常：物理场必须是严格的二维矩阵 (当前为 {self.u_map.ndim}D)。")
+            raise ValueError(f"Frame {self.frame_id} is missing u_map, exx_map, or mask.")
+        if self.u_map.ndim != 2 or self.exx_map.ndim != 2 or self.mask.ndim != 2:
+            raise ValueError(f"Frame {self.frame_id} fields must all be 2D matrices.")
 
         shape_u = self.u_map.shape
-        shape_exx = self.exx_map.shape
-        shape_mask = self.mask.shape
-
-        if not (shape_u == shape_exx == shape_mask):
-            logger.error(f"矩阵维度失配 -> u_map: {shape_u}, exx_map: {shape_exx}, mask: {shape_mask}")
+        if not (shape_u == self.exx_map.shape == self.mask.shape):
+            logger.error(
+                "Matrix shape mismatch -> u_map: %s, exx_map: %s, mask: %s",
+                shape_u,
+                self.exx_map.shape,
+                self.mask.shape,
+            )
             raise ValueError(
-                f"Frame {self.frame_id} 空间拓扑异常：位移场、应变场和掩码的矩阵维度必须绝对对齐。"
+                f"Frame {self.frame_id} matrices must have identical shapes."
             )
 
-        # 4. 类型漂移矫正
+        if self.v_map is not None:
+            if self.v_map.ndim != 2:
+                raise ValueError(f"Frame {self.frame_id} v_map must be a 2D matrix.")
+            if self.v_map.shape != shape_u:
+                raise ValueError(
+                    f"Frame {self.frame_id} v_map shape {self.v_map.shape} "
+                    f"does not match u_map {shape_u}."
+                )
+
         if self.mask.dtype != bool:
-            # NOTE: 由于启用了 frozen=True，常规的 self.mask = xxx 会触发 FrozenInstanceError。
-            # 必须调用底层的 object.__setattr__ 来进行强行内存重写。
-            object.__setattr__(self, 'mask', self.mask.astype(bool))
+            object.__setattr__(self, "mask", self.mask.astype(bool))

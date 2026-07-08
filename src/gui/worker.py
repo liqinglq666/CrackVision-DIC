@@ -26,6 +26,8 @@ class FrameTaskPayload:
     config: dict
     u_path: str
     exx_path: str
+    mask_path: str
+    v_path: Optional[str]
     ratio: float
     frame_id: int
     time_s: float
@@ -39,10 +41,11 @@ def analyze_single_frame_task(payload: FrameTaskPayload) -> Optional[Dict[str, A
 
         u = np.load(payload.u_path)
         exx = np.load(payload.exx_path)
-        mask = ~np.isnan(exx)
+        mask = np.load(payload.mask_path).astype(bool)
+        v = np.load(payload.v_path) if payload.v_path else None
 
         skeleton = _worker_engine.extract_skeleton(exx, mask)
-        res = _worker_engine.compute_cod(u, skeleton, payload.ratio)
+        res = _worker_engine.compute_cod(u, skeleton, payload.ratio, v_map=v)
 
         L0 = float(payload.config.get('experiment', {}).get('gauge_length_mm', 80.0))
 
@@ -127,11 +130,27 @@ class AnalysisPipelineWorker(QThread):
 
         tasks = []
         for frame in PipelineIO.stream_dic_frames(mat_path, ratio):
-            u_p, exx_p = temp_dir / f"u_{frame.frame_id}.npy", temp_dir / f"exx_{frame.frame_id}.npy"
+            u_p = temp_dir / f"u_{frame.frame_id}.npy"
+            exx_p = temp_dir / f"exx_{frame.frame_id}.npy"
+            mask_p = temp_dir / f"mask_{frame.frame_id}.npy"
+            v_p = temp_dir / f"v_{frame.frame_id}.npy" if frame.v_map is not None else None
             np.save(u_p, frame.u_map)
             np.save(exx_p, frame.exx_map)
+            np.save(mask_p, frame.mask)
+            if v_p is not None:
+                np.save(v_p, frame.v_map)
             tasks.append(
-                FrameTaskPayload(self.config, str(u_p), str(exx_p), ratio, frame.frame_id, frame.frame_id * interval))
+                FrameTaskPayload(
+                    self.config,
+                    str(u_p),
+                    str(exx_p),
+                    str(mask_p),
+                    str(v_p) if v_p is not None else None,
+                    ratio,
+                    frame.frame_id,
+                    frame.frame_id * interval,
+                )
+            )
 
         results = []
         cur_max_strain = 0.0
