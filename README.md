@@ -1,6 +1,6 @@
 # CrackVision-DIC
 
-Ncorr/DIC 导出的 `.mat` 很难直接写论文；CrackVision-DIC 把 DIC 位移/应变场和 MTS 曲线接起来，批量算裂缝数量、裂缝间距、COD、宽度分位数和 QA 表。
+Ncorr/DIC 导出的 `.mat` 很难直接写论文；CrackVision-DIC 把 DIC 位移/应变场、相机裂缝图和 MTS 曲线接起来，批量算裂缝数量、裂缝间距、COD、宽度分位数和 QA 表。
 
 它干一件事：把 DIC 后处理从“手搓 Excel 地狱”拉回工程管线。
 
@@ -15,6 +15,11 @@ DIC .mat
 ├─ exx strain map
 ├─ valid mask / quality map   # 有就用，没有就 finite-only
 └─ scale / spacing / time metadata
+
+camera images                # 可选，用来辅助找裂缝位置
+├─ images/*.png
+├─ frames/*.jpg
+└─ crack_images/*.tif
 
 MTS .csv                     # 可选
 ├─ time
@@ -36,8 +41,12 @@ _Batch_Summary.xlsx
 crack_count
 crack_spacing_mm
 W_avg_um
+W_median_um
+W_95_um
 W_99_um
 W_max_um
+W_image_area_skeleton_um
+W_global_est_um
 global_strain
 Stress_MPa
 QA_Metadata
@@ -71,7 +80,7 @@ python main.py
 跑测试：
 
 ```bash
-pytest
+python -m pytest
 ```
 
 没 GUI？先看 PySide6 装没装：
@@ -102,6 +111,44 @@ python -c "import PySide6; print('PySide6 OK')"
 
 自动匹配现在是严格 token 匹配。`E1` 不会乱配 `E10`。匹配不到就手动指定，别和文件名硬刚。
 
+## 相机图像辅助裂缝识别
+
+默认关闭。要用就改：
+
+```yaml
+image_crack_detection:
+  enabled: true
+  image_dir: images          # 相对于 .mat 所在目录；也可以写绝对路径
+  filename_pattern:          # 可空。例：frame_{frame:04d}.png
+  frame_index_offset: 0
+  dark_cracks: true
+```
+
+目录推荐这样放：
+
+```text
+Specimen_A/
+├─ A.mat
+├─ A.csv
+└─ images/
+   ├─ 0000.png
+   ├─ 0001.png
+   ├─ 0002.png
+   └─ ...
+```
+
+如果不写 `image_dir`，程序会在 `.mat` 旁边自动找：
+
+```text
+images/
+imgs/
+frames/
+camera/
+crack_images/
+```
+
+注意：图像 mask 只是辅助找裂缝位置。真正的裂缝宽度主结果还是 DIC 位移跳量。别把照片黑线宽度当物理 COD。那东西受光照、喷斑、阈值影响，脾气很差。
+
 ## 配置
 
 主配置：
@@ -130,15 +177,16 @@ experiment:
   gauge_length_mm: 80.0
 
 sync:
-  # DIC 和 MTS 时间轴至少重叠多少才同步
   min_overlap_fraction: 0.60
-
-  # 插值后最多允许多少 NaN
   max_missing_fraction: 0.05
-
-  # 触发不同步就调这里。正数 = 时间轴往后挪
   dic_time_offset_s: 0.0
   mts_time_offset_s: 0.0
+
+crack_detection:
+  # 默认：DIC 高 exx 区 + 图像裂缝 mask 取并集
+  fusion_mode: strain_or_image
+  image_dilation_radius_points: 1
+  require_strain_support: false
 
 physics:
   # exx 裂缝候选区阈值：median + k * 1.4826 * MAD
@@ -147,18 +195,98 @@ physics:
   # 斜裂缝 COD 需要 v map。没有 v 就别假装很准
   require_v_map_for_cod: true
 
+  # 可选。填了以后 W_global_est_um = max(0, strain - stress/E) * spacing
+  elastic_modulus_mpa:
+
   # COD 底噪过滤，单位 mm
   cod_min_mm: 0.002
   cod_min_mean_mm: 0.002
   cod_max_mm: 5.0
-
-  # 单轴拉伸建议开；循环加载/卸载关掉
-  enforce_monotonic_strain: true
 ```
 
 改完配置，重启 GUI。别赌热加载。代码不欠你这个魔法。
 
 ## 计算口径
+
+### 裂缝位置
+
+以前只看 `exx` 高应变带。现在可以融合相机图像：
+
+```text
+strain_zone = exx > median(exx) + k * 1.4826 * MAD
+image_zone  = camera image crack mask
+crack_zone  = strain_zone OR image_zone       # 默认
+```
+
+可选模式：
+
+```text
+strain_or_image       # 默认，敏感，适合 ECC 细裂缝
+strain_and_image      # 严格，容易漏细裂缝
+image_near_strain     # 图像裂缝必须靠近高 exx 支撑
+image_only            # 只用图像，不推荐当主方法
+```
+
+然后：
+
+```text
+remove small objects
+skeletonize
+sample COD along normal direction
+filter by length / COD floor / COD ceiling
+```
+
+### COD
+
+默认算法：法向位移跳量。
+
+```text
+w_mm = abs((u_plus - u_minus) * nx + (v_plus - v_minus) * ny) * pixel_size_mm
+```
+
+输出：
+
+```text
+W_median_um   # 每条裂缝中位宽度后再汇总，抗噪声
+W_avg_um
+W_95_um
+W_99_um
+W_max_um      # 保留，但别迷信 max
+```
+
+如果 `require_v_map_for_cod: true` 但 `.mat` 没有 v 位移场，结果会写：
+
+```text
+missing_v_map_required
+```
+
+这不是 bug。是软件拒绝陪你一起骗自己。
+
+### 图像法平均宽度
+
+图像辅助宽度只做 sanity check：
+
+```text
+W_image_area_skeleton_um = crack_area / skeleton_length
+```
+
+这是基于相机 mask 映射到 DIC grid 后估算的平均宽度。能看趋势，别拿它压过 DIC jump 主结果。
+
+### 全局估算宽度
+
+再给一个粗暴对照：
+
+```text
+W_global_est_um = crack_strain * crack_spacing_mm * 1000
+```
+
+如果填了弹模：
+
+```text
+crack_strain = max(0, global_strain - Stress_MPa / elastic_modulus_mpa)
+```
+
+没填弹模就用总应变。粗，但能抓十倍级离谱错误。
 
 ### 尺度
 
@@ -195,39 +323,6 @@ sync_status
 ```
 
 这两个字段比感觉靠谱。
-
-### COD
-
-默认算法：法向位移跳量。
-
-```text
-w_mm = abs((u_plus - u_minus) * nx + (v_plus - v_minus) * ny) * pixel_size_mm
-```
-
-如果 `require_v_map_for_cod: true` 但 `.mat` 没有 v 位移场，结果会写：
-
-```text
-missing_v_map_required
-```
-
-这不是 bug。是软件拒绝陪你一起骗自己。
-
-### 裂缝骨架
-
-`exx` 场先过稳健阈值：
-
-```text
-threshold = median(exx) + k * 1.4826 * MAD
-```
-
-然后：
-
-```text
-remove small objects
-skeletonize
-sample COD along normal direction
-filter by length / COD floor / COD ceiling
-```
 
 ## 输出文件
 
@@ -300,6 +395,9 @@ dic_point_spacing_mm
 metadata_source
 dic_time_source
 v_map_present
+image_mask_present
+image_mask_source
+crack_detection_source
 quality_valid_fraction
 cod_status
 sync_status
@@ -312,6 +410,7 @@ strain_source
 metadata_source 里全是 config_fallback  -> 去确认比例尺和 subset spacing
 dic_time_source 是 frame_index_interval_fallback -> 去确认 sampling_interval_s
 v_map_present 是 False 且 require_v_map_for_cod 是 true -> COD 不会算
+image_mask_present 一直 False -> 图片没读到，或者 image_crack_detection 没开
 quality_valid_fraction 很低 -> 这帧别拿去吹论文
 sync_status 不是 synced -> MTS 没同步上，别画 stress-strain 联动结论
 ```
@@ -327,10 +426,10 @@ sync_status 不是 synced -> MTS 没同步上，别画 stress-strain 联动结�
 最小格式：
 
 ```csv
-Frame,crack_count,W_avg_um,W_max_um
-0,0,0,0
-10,3,18.2,41.5
-20,7,31.0,86.4
+Frame,crack_count,W_median_um,W_avg_um,W_95_um,W_max_um
+0,0,0,0,0,0
+10,3,16.5,18.2,35.1,41.5
+20,7,28.0,31.0,70.2,86.4
 ```
 
 软件会写入：
@@ -342,6 +441,26 @@ Frame,crack_count,W_avg_um,W_max_um
 没有人工标注也能跑。只是少一层保险。
 
 ## 常见翻车点
+
+### 图片没参与识别
+
+先看：
+
+```yaml
+image_crack_detection:
+  enabled: true
+  image_dir: images
+```
+
+再看 QA：
+
+```text
+image_mask_present
+image_mask_source
+crack_detection_source
+```
+
+如果 `image_mask_source` 一直是 `image_mask_missing`，就是没找到图。文件名别整花活。
 
 ### MTS 同步失败
 
@@ -399,6 +518,13 @@ physics:
   cod_min_mm: 0.005
 ```
 
+或者把融合改严格：
+
+```yaml
+crack_detection:
+  fusion_mode: image_near_strain
+```
+
 ### 主裂缝断裂
 
 调低一点：
@@ -408,32 +534,44 @@ physics:
   strain_threshold_k: 1.2
 ```
 
-或者检查 DIC 失相关。散斑烂了，算法不是巫术。
+或者开图像辅助：
+
+```yaml
+image_crack_detection:
+  enabled: true
+crack_detection:
+  fusion_mode: strain_or_image
+```
+
+散斑烂了，算法不是巫术。
 
 ## 本地开发
 
 ```bash
 pip install -r requirements.txt
-pytest
+python -m pytest
 python main.py
 ```
 
 只想测核心契约：
 
 ```bash
-pytest tests/test_core_contracts.py
+python -m pytest tests/test_core_contracts.py
 ```
 
 当前测试盯着几件要命的事：
 
 ```text
-缺 v map时明确返回 missing_v_map_required
+缺 v map 时明确返回 missing_v_map_required
 DIC strains/displacements 帧数不一致时直接报错
 .mat 有时间轴就用 metadata time
 .mat 没时间轴就用 sampling_interval_s
 Excel 导出必须去掉 object payload
 目标应变没达到也必须保留 not_reached 行
 裂缝分布必须是 tidy long format
+图像 mask 能参与裂缝 skeleton
+COD 必须导出 median / P95
+全局估算宽度能扣除 sigma/E
 ```
 
 ## 目录
@@ -445,8 +583,9 @@ CrackVision-DIC
 │  └─ default.yaml
 ├─ src/
 │  ├─ core/
+│  │  ├─ image_crack.py          # 相机图像 crack mask
 │  │  ├─ io_sync.py              # MAT 读取、metadata、时间轴
-│  │  ├─ physics.py              # skeleton、COD、quality mask
+│  │  ├─ physics.py              # skeleton、COD、quality mask、融合逻辑
 │  │  ├─ evolution_analyzer.py   # MTS CSV 同步
 │  │  └─ models.py
 │  └─ gui/
@@ -459,4 +598,4 @@ CrackVision-DIC
 
 ## 一句话结论
 
-先看 `_Batch_Summary.xlsx`，再用 `01_Frame_Curves` 画时序，用 `03_Distribution_Tidy` 画分布。别再手动复制粘贴。那不是科研，是体力劳动 cosplay。
+主结果看 DIC normal displacement jump；图像 mask 用来辅助找裂缝，`W_image_area_skeleton_um` 和 `W_global_est_um` 用来抓离谱值。别单押一种方法。单押就是给 bug 上贡。
