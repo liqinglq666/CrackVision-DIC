@@ -13,6 +13,7 @@ from openpyxl.utils import get_column_letter
 from PySide6.QtCore import QThread, Signal
 
 from src.core.evolution_analyzer import EvolutionAnalyzer
+from src.core.image_crack import ImageCrackMaskProvider, image_area_skeleton_width_mm
 from src.core.io_sync import PipelineIO
 from src.core.physics import CrackPhysicsEngine
 
@@ -29,6 +30,10 @@ class FrameTaskPayload:
     mask_path: str
     v_path: Optional[str]
     quality_path: Optional[str]
+    image_mask_path: Optional[str]
+    image_mask_source: str
+    image_mask_pixels: float
+    image_mask_total_pixels: int
     ratio: float
     dic_point_spacing_mm: float
     subset_spacing_px: float
@@ -101,6 +106,7 @@ def analyze_single_frame_task(payload: FrameTaskPayload) -> Optional[Dict[str, A
         mask = np.load(payload.mask_path).astype(bool)
         v = np.load(payload.v_path) if payload.v_path else None
         quality = np.load(payload.quality_path) if payload.quality_path else None
+        image_mask = np.load(payload.image_mask_path).astype(bool) if payload.image_mask_path else None
 
         quality_mask, quality_fraction, quality_reason = _worker_engine.build_quality_mask(mask, u, v, quality)
         strain, virtual_l0, left_x, right_x, strain_source = _virtual_extensometer_strain(
@@ -110,8 +116,16 @@ def analyze_single_frame_task(payload: FrameTaskPayload) -> Optional[Dict[str, A
         if quality_fraction < _worker_engine.min_valid_fraction:
             res = _worker_engine._empty("quality_rejected")
             threshold = 0.0
+            crack_detection_source = "quality_rejected"
+            image_support_fraction = 0.0
+            image_area_mm2, image_length_mm, image_width_mm = 0.0, 0.0, 0.0
         else:
-            skeleton, threshold = _worker_engine.extract_skeleton(exx, quality_mask)
+            skeleton, threshold, crack_detection_source, image_support_fraction = _worker_engine.extract_skeleton(
+                exx, quality_mask, image_crack_mask=image_mask
+            )
+            image_area_mm2, image_length_mm, image_width_mm = image_area_skeleton_width_mm(
+                image_mask, payload.dic_point_spacing_mm
+            )
             res = _worker_engine.compute_cod(
                 u,
                 skeleton,
@@ -140,6 +154,16 @@ def analyze_single_frame_task(payload: FrameTaskPayload) -> Optional[Dict[str, A
                 "dic_point_spacing_mm": float(payload.dic_point_spacing_mm),
                 "metadata_source": payload.metadata_source,
                 "v_map_present": bool(v is not None),
+                "image_mask_present": bool(image_mask is not None),
+                "image_mask_source": payload.image_mask_source,
+                "image_mask_fraction": float(payload.image_mask_pixels / payload.image_mask_total_pixels)
+                if payload.image_mask_total_pixels > 0
+                else 0.0,
+                "image_support_fraction": float(image_support_fraction),
+                "crack_detection_source": crack_detection_source,
+                "W_image_area_skeleton_um": float(image_width_mm * 1000.0),
+                "image_crack_area_mm2": float(image_area_mm2),
+                "image_skeleton_length_mm": float(image_length_mm),
             }
         )
 
@@ -201,6 +225,7 @@ class AnalysisPipelineWorker(QThread):
         temp_dir = Path(tempfile.mkdtemp(prefix="cv_"))
         tasks = []
         first_meta = None
+        image_provider = ImageCrackMaskProvider(self.config, mat_path)
 
         try:
             for frame in PipelineIO.stream_dic_frames(mat_path, ratio, self.config):
@@ -211,6 +236,10 @@ class AnalysisPipelineWorker(QThread):
                         f"DIC step={frame.subset_spacing_px:.3f} px | "
                         f"grid={frame.dic_point_spacing_mm:.6f} mm/point | source={frame.metadata_source}"
                     )
+                    if image_provider.enabled:
+                        self.log_emitted.emit(
+                            f"Image crack mask enabled | dir={image_provider.image_dir} | files={len(image_provider.files)}"
+                        )
 
                 frame_time_s, time_source = self._resolve_frame_time(frame, interval)
 
@@ -219,6 +248,9 @@ class AnalysisPipelineWorker(QThread):
                 mask_p = temp_dir / f"mask_{frame.frame_id}.npy"
                 v_p = temp_dir / f"v_{frame.frame_id}.npy" if frame.v_map is not None else None
                 q_p = temp_dir / f"q_{frame.frame_id}.npy" if frame.quality_map is not None else None
+                img_mask, img_source, img_pixels, img_total = image_provider.mask_for_frame(frame.frame_id, frame.exx_map.shape)
+                img_p = temp_dir / f"image_mask_{frame.frame_id}.npy" if img_mask is not None else None
+
                 np.save(u_p, frame.u_map)
                 np.save(exx_p, frame.exx_map)
                 np.save(mask_p, frame.mask)
@@ -226,6 +258,8 @@ class AnalysisPipelineWorker(QThread):
                     np.save(v_p, frame.v_map)
                 if q_p is not None:
                     np.save(q_p, frame.quality_map)
+                if img_p is not None:
+                    np.save(img_p, img_mask)
 
                 tasks.append(
                     FrameTaskPayload(
@@ -235,6 +269,10 @@ class AnalysisPipelineWorker(QThread):
                         str(mask_p),
                         str(v_p) if v_p is not None else None,
                         str(q_p) if q_p is not None else None,
+                        str(img_p) if img_p is not None else None,
+                        img_source,
+                        img_pixels,
+                        img_total,
                         frame.ratio,
                         float(frame.dic_point_spacing_mm),
                         frame.subset_spacing_px,
@@ -284,9 +322,30 @@ class AnalysisPipelineWorker(QThread):
             else:
                 df["sync_status"] = "no_mts"
 
+            df = self._add_global_width_estimate(df)
             self._export_results(mat_path, df, results)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _add_global_width_estimate(self, df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        phys = self.config.get("physics", {})
+        elastic_modulus_mpa = phys.get("elastic_modulus_mpa")
+        strain = pd.to_numeric(out.get("global_strain", 0.0), errors="coerce").fillna(0.0)
+        mode = "total_strain"
+        if elastic_modulus_mpa is not None and "Stress_MPa" in out.columns:
+            E = float(elastic_modulus_mpa)
+            if E > 0:
+                stress = pd.to_numeric(out["Stress_MPa"], errors="coerce").fillna(0.0)
+                strain = (strain - stress / E).clip(lower=0.0)
+                mode = "strain_minus_sigma_over_E"
+        spacing = pd.to_numeric(out.get("crack_spacing_mm", 0.0), errors="coerce").fillna(0.0)
+        crack_count = pd.to_numeric(out.get("crack_count", 0.0), errors="coerce").fillna(0.0)
+        width_um = strain * spacing * 1000.0
+        width_um = width_um.where(crack_count > 0, 0.0)
+        out["W_global_est_um"] = width_um
+        out["global_width_estimate_mode"] = mode
+        return out
 
     def _export_results(self, mat_path: Path, df: pd.DataFrame, results: list[Dict[str, Any]]) -> None:
         specimen = mat_path.stem
@@ -341,6 +400,8 @@ class AnalysisPipelineWorker(QThread):
         out["Specimen"] = specimen
         out["Strain_pct"] = pd.to_numeric(out.get("global_strain", 0.0), errors="coerce").fillna(0.0) * 100.0
         out["W_avg_um"] = pd.to_numeric(out.get("w_avg", 0.0), errors="coerce").fillna(0.0) * 1000.0
+        out["W_median_um"] = pd.to_numeric(out.get("w_median", 0.0), errors="coerce").fillna(0.0) * 1000.0
+        out["W_95_um"] = pd.to_numeric(out.get("w_95", 0.0), errors="coerce").fillna(0.0) * 1000.0
         out["W_max_um"] = pd.to_numeric(out.get("w_max", 0.0), errors="coerce").fillna(0.0) * 1000.0
         out["W_99_um"] = pd.to_numeric(out.get("w_99", 0.0), errors="coerce").fillna(0.0) * 1000.0
         out["crack_spacing_mm"] = pd.to_numeric(out.get("crack_spacing_mm", 0.0), errors="coerce").fillna(0.0)
@@ -357,8 +418,12 @@ class AnalysisPipelineWorker(QThread):
             "crack_count",
             "crack_spacing_mm",
             "W_avg_um",
+            "W_median_um",
+            "W_95_um",
             "W_99_um",
             "W_max_um",
+            "W_image_area_skeleton_um",
+            "W_global_est_um",
             "cod_sample_count",
             "quality_valid_fraction",
             "strain_threshold_used",
@@ -392,11 +457,23 @@ class AnalysisPipelineWorker(QThread):
             "crack_count",
             "crack_spacing_mm",
             "W_avg_um",
+            "W_median_um",
+            "W_95_um",
             "W_99_um",
             "W_max_um",
+            "W_image_area_skeleton_um",
+            "W_global_est_um",
+            "global_width_estimate_mode",
             "cod_sample_count",
             "quality_valid_fraction",
             "strain_threshold_used",
+            "crack_detection_source",
+            "image_mask_present",
+            "image_mask_source",
+            "image_mask_fraction",
+            "image_support_fraction",
+            "image_crack_area_mm2",
+            "image_skeleton_length_mm",
             "cod_status",
             "sync_status",
             "dic_time_source",
@@ -480,9 +557,14 @@ class AnalysisPipelineWorker(QThread):
             "Crack_Count": int(row.get("crack_count", 0)) if pd.notna(row.get("crack_count", np.nan)) else 0,
             "Crack_Spacing_mm": float(row.get("crack_spacing_mm", np.nan)) if pd.notna(row.get("crack_spacing_mm", np.nan)) else np.nan,
             "W_avg_um": float(row.get("W_avg_um", np.nan)) if pd.notna(row.get("W_avg_um", np.nan)) else np.nan,
+            "W_median_um": float(row.get("W_median_um", np.nan)) if pd.notna(row.get("W_median_um", np.nan)) else np.nan,
+            "W_95_um": float(row.get("W_95_um", np.nan)) if pd.notna(row.get("W_95_um", np.nan)) else np.nan,
             "W_99_um": float(row.get("W_99_um", np.nan)) if pd.notna(row.get("W_99_um", np.nan)) else np.nan,
             "W_max_um": float(row.get("W_max_um", np.nan)) if pd.notna(row.get("W_max_um", np.nan)) else np.nan,
+            "W_image_area_skeleton_um": float(row.get("W_image_area_skeleton_um", np.nan)) if pd.notna(row.get("W_image_area_skeleton_um", np.nan)) else np.nan,
+            "W_global_est_um": float(row.get("W_global_est_um", np.nan)) if pd.notna(row.get("W_global_est_um", np.nan)) else np.nan,
             "Quality_Valid_Fraction": float(row.get("quality_valid_fraction", np.nan)) if pd.notna(row.get("quality_valid_fraction", np.nan)) else np.nan,
+            "Crack_Detection_Source": str(row.get("crack_detection_source", "")),
             "COD_Status": str(row.get("cod_status", "")),
             "Sync_Status": str(row.get("sync_status", "")),
         }
@@ -535,7 +617,9 @@ class AnalysisPipelineWorker(QThread):
                 "Stress_MPa",
                 "Crack_ID",
                 "Length_mm",
+                "W_median_um",
                 "W_avg_um",
+                "W_95_um",
                 "W_max_um",
                 "Sample_Count",
                 "Quality_Valid_Fraction",
@@ -559,6 +643,8 @@ class AnalysisPipelineWorker(QThread):
         out["Real_Strain_pct"] = float(frame_row.get("Strain_pct", np.nan)) if pd.notna(frame_row.get("Strain_pct", np.nan)) else np.nan
         out["Stress_MPa"] = float(frame_row.get("Stress_MPa", np.nan)) if pd.notna(frame_row.get("Stress_MPa", np.nan)) else np.nan
         out["W_avg_um"] = pd.to_numeric(out.get("W_avg_mm", np.nan), errors="coerce") * 1000.0
+        out["W_median_um"] = pd.to_numeric(out.get("W_median_mm", np.nan), errors="coerce") * 1000.0
+        out["W_95_um"] = pd.to_numeric(out.get("W_95_mm", np.nan), errors="coerce") * 1000.0
         out["W_max_um"] = pd.to_numeric(out.get("W_max_mm", np.nan), errors="coerce") * 1000.0
         out["Length_mm"] = pd.to_numeric(out.get("Length_mm", out.get("L_mm", np.nan)), errors="coerce")
         out["Sample_Count"] = pd.to_numeric(out.get("count", np.nan), errors="coerce")
@@ -575,7 +661,9 @@ class AnalysisPipelineWorker(QThread):
             "Stress_MPa",
             "Crack_ID",
             "Length_mm",
+            "W_median_um",
             "W_avg_um",
+            "W_95_um",
             "W_max_um",
             "Sample_Count",
             "Quality_Valid_Fraction",
@@ -584,7 +672,7 @@ class AnalysisPipelineWorker(QThread):
         for col in keep:
             if col not in out.columns:
                 out[col] = np.nan
-        return out[keep].sort_values(["State", "W_avg_um"], ascending=[True, False]).reset_index(drop=True)
+        return out[keep].sort_values(["State", "W_median_um"], ascending=[True, False]).reset_index(drop=True)
 
     @staticmethod
     def _build_distribution_table(crack_tidy_df: pd.DataFrame) -> pd.DataFrame:
@@ -593,7 +681,7 @@ class AnalysisPipelineWorker(QThread):
 
         rows = []
         for _, row in crack_tidy_df.iterrows():
-            for metric in ("W_avg_um", "W_max_um"):
+            for metric in ("W_median_um", "W_avg_um", "W_95_um", "W_max_um"):
                 value = row.get(metric)
                 if pd.notna(value):
                     rows.append(
@@ -622,9 +710,16 @@ class AnalysisPipelineWorker(QThread):
             "crack_count",
             "crack_spacing_mm",
             "W_avg_um",
+            "W_median_um",
+            "W_95_um",
             "W_99_um",
             "W_max_um",
+            "W_image_area_skeleton_um",
+            "W_global_est_um",
             "quality_valid_fraction",
+            "crack_detection_source",
+            "image_mask_present",
+            "image_mask_fraction",
             "cod_status",
             "sync_status",
         ]
@@ -650,19 +745,26 @@ class AnalysisPipelineWorker(QThread):
                     "UTS_Stress_MPa": float(ult_row.get("Stress_MPa", np.nan)) if has_stress else np.nan,
                     "Ultimate_Frame": int(ult_row.get("Frame", -1)) if pd.notna(ult_row.get("Frame", np.nan)) else np.nan,
                     "Ultimate_Strain_pct": float(ult_row.get("Strain_pct", np.nan)) if pd.notna(ult_row.get("Strain_pct", np.nan)) else np.nan,
+                    "Ultimate_W_median_um": float(ult_row.get("W_median_um", np.nan)) if pd.notna(ult_row.get("W_median_um", np.nan)) else np.nan,
+                    "Ultimate_W_95_um": float(ult_row.get("W_95_um", np.nan)) if pd.notna(ult_row.get("W_95_um", np.nan)) else np.nan,
                     "Ultimate_W_99_um": float(ult_row.get("W_99_um", np.nan)) if pd.notna(ult_row.get("W_99_um", np.nan)) else np.nan,
                     "Ultimate_W_max_um": float(ult_row.get("W_max_um", np.nan)) if pd.notna(ult_row.get("W_max_um", np.nan)) else np.nan,
+                    "Ultimate_W_image_area_skeleton_um": float(ult_row.get("W_image_area_skeleton_um", np.nan)) if pd.notna(ult_row.get("W_image_area_skeleton_um", np.nan)) else np.nan,
+                    "Ultimate_W_global_est_um": float(ult_row.get("W_global_est_um", np.nan)) if pd.notna(ult_row.get("W_global_est_um", np.nan)) else np.nan,
                     "Saturated_Frame": int(sat_row.get("Frame", -1)) if pd.notna(sat_row.get("Frame", np.nan)) else np.nan,
                     "Saturated_Strain_pct": float(sat_row.get("Strain_pct", np.nan)) if pd.notna(sat_row.get("Strain_pct", np.nan)) else np.nan,
                     "Saturated_Crack_Count": int(sat_row.get("crack_count", max_crack_count)) if pd.notna(sat_row.get("crack_count", np.nan)) else max_crack_count,
                     "Saturated_Spacing_mm": float(sat_row.get("crack_spacing_mm", np.nan)) if pd.notna(sat_row.get("crack_spacing_mm", np.nan)) else np.nan,
                     "Saturated_W_avg_um": float(sat_row.get("W_avg_um", np.nan)) if pd.notna(sat_row.get("W_avg_um", np.nan)) else np.nan,
+                    "Saturated_W_median_um": float(sat_row.get("W_median_um", np.nan)) if pd.notna(sat_row.get("W_median_um", np.nan)) else np.nan,
                     "Crack_Detail_Rows": int(len(crack_tidy_df)),
                     "Pixel_Size_mm_per_px": first_frame.get("pixel_size_mm", np.nan),
                     "Subset_Spacing_px": first_frame.get("subset_spacing_px", np.nan),
                     "DIC_Point_Spacing_mm": first_frame.get("dic_point_spacing_mm", np.nan),
                     "Metadata_Source": first_frame.get("metadata_source", ""),
                     "DIC_Time_Source": first_frame.get("dic_time_source", ""),
+                    "Crack_Detection_Source_First": first_frame.get("crack_detection_source", ""),
+                    "Image_Mask_Used": bool(frame_df.get("image_mask_present", pd.Series([False])).astype(bool).any()) if "image_mask_present" in frame_df else False,
                     "Strain_Source": ult_row.get("strain_source", ""),
                     "Sync_Status": ult_row.get("sync_status", ""),
                     "Worst_COD_Status_Count": int((frame_df.get("cod_status", pd.Series(dtype=str)).astype(str) != "ok").sum()) if "cod_status" in frame_df else 0,
@@ -682,6 +784,11 @@ class AnalysisPipelineWorker(QThread):
             "quality_filter",
             "quality_map_present",
             "v_map_present",
+            "image_mask_present",
+            "image_mask_source",
+            "image_mask_fraction",
+            "image_support_fraction",
+            "crack_detection_source",
             "cod_status",
             "cod_vector_mode",
             "cod_sample_count",
@@ -772,6 +879,10 @@ class AnalysisPipelineWorker(QThread):
             "metadata_source",
             "dic_time_source",
             "v_map_present",
+            "image_mask_present",
+            "image_mask_source",
+            "image_mask_fraction",
+            "crack_detection_source",
             "quality_map_present",
             "quality_filter",
             "quality_valid_fraction",
@@ -779,6 +890,7 @@ class AnalysisPipelineWorker(QThread):
             "cod_status",
             "sync_status",
             "strain_source",
+            "global_width_estimate_mode",
         ]:
             if key in df.columns:
                 vals = df[key].dropna()
@@ -821,7 +933,7 @@ class AnalysisPipelineWorker(QThread):
         if merged.empty:
             return pd.DataFrame({"Status": [f"No matching frames with annotation file: {ann_path.name}"]})
         rows = [{"Status": "OK", "Annotation_File": str(ann_path), "Matched_Frames": int(len(merged))}]
-        for metric in ("crack_count", "W_avg_um", "W_max_um"):
+        for metric in ("crack_count", "W_avg_um", "W_median_um", "W_95_um", "W_max_um"):
             calc_col = f"{metric}_calc"
             manual_col = f"{metric}_manual"
             if calc_col in merged.columns and manual_col in merged.columns:
