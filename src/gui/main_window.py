@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QStackedWidget,
     QTextBrowser,
+    QComboBox,
+    QScrollArea,
 )
 from PySide6.QtGui import QDesktopServices, QAction
 from PySide6.QtCore import Qt, QUrl
@@ -67,6 +69,26 @@ DEFAULT_CONFIG: dict = {
         "threshold": None,
         "min_valid_fraction": 0.20,
     },
+    "crack_detection": {
+        "fusion_mode": "strain_or_image",
+        "image_dilation_radius_points": 1,
+        "strain_dilation_radius_points": 0,
+        "require_strain_support": False,
+    },
+    "image_crack_detection": {
+        "enabled": False,
+        "image_dir": None,
+        "filename_pattern": None,
+        "frame_index_offset": 0,
+        "dark_cracks": True,
+        "background_sigma_px": 12.0,
+        "threshold_quantile": 0.92,
+        "otsu_weight": 0.75,
+        "min_object_area_px": 20,
+        "min_object_area_points": 5,
+        "closing_radius_px": 1,
+        "auto_discover_dir_names": ["images", "imgs", "frames", "camera", "crack_images"],
+    },
     "physics": {
         "strain_threshold_k": 1.5,
         "min_cracking_strain": 1.5e-4,
@@ -74,6 +96,7 @@ DEFAULT_CONFIG: dict = {
         "morphology_closing_radius_points": 0,
         "min_crack_area_points": 10,
         "min_crack_length_mm": 0.2,
+        "elastic_modulus_mpa": None,
         "require_v_map_for_cod": True,
         "cod_sampling": {
             "delta_points": 3,
@@ -110,7 +133,7 @@ class UserManualDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("CrackVision-DIC 用户说明书与物理参数指南")
-        self.resize(780, 680)
+        self.resize(820, 720)
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -121,27 +144,34 @@ class UserManualDialog(QDialog):
             """
         <h2 style='color: #2F3640;'>CrackVision-DIC 物理分析引擎说明书</h2>
 
-        <h3 style='color: #e1b12c;'>一、核心物理参数释义</h3>
+        <h3 style='color: #e1b12c;'>一、核心物理参数</h3>
         <ul>
-            <li><b>DIC 帧间隔 (Sampling Interval)</b>: 当 .mat 内没有真实时间轴时，系统会用
-                <code>Frame × Sampling Interval</code> 构造 DIC 时间轴。若该值填错，MTS 同步会整体错位。</li>
-            <li><b>宏观拉伸标距 (Gauge Length)</b>: 试验机位移换算应变时使用的物理跨度；DIC virtual extensometer
-                未单独配置标距时，也会作为审查参考。</li>
-            <li><b>缺省兜底比例尺 (Scale)</b>: 当 .mat 文件无法读取标定信息时，用此数值进行 mm/px 换算。
-                请在 QA_Metadata 中确认最终使用的是 mat metadata 还是 config fallback。</li>
-            <li><b>底噪拦截防线 (COD Min)</b>: 用于过滤亚像素噪声裂缝宽度。默认 0.002 mm；若 DIC 噪声偏大，
-                可提高至 0.005 mm。</li>
-            <li><b>MAD 稳健阈值 (k)</b>: 应变场提取骨架的敏感度。默认 1.5；微裂缝过多可上调，主裂缝断裂可下调。</li>
-            <li><b>强制单调应变</b>: 单轴拉伸常建议开启，可抑制 DIC 噪声导致的回跳；若分析卸载/循环加载，应关闭。</li>
+            <li><b>DIC 帧间隔</b>: .mat 内没有真实时间轴时，系统用
+                <code>Frame × Sampling Interval</code> 构造 DIC 时间轴。填错，MTS 同步直接偏航。</li>
+            <li><b>缺省兜底比例尺</b>: .mat 读不到标定信息时才用。最终来源看 QA_Metadata。</li>
+            <li><b>COD 底噪拦截</b>: 过滤亚像素噪声。默认 0.002 mm；噪声大就上调。</li>
+            <li><b>MAD k</b>: DIC exx 裂缝候选区阈值。裂缝过多上调，断裂不连续下调。</li>
+            <li><b>COD 采样距离</b>: delta_mm / max_search_mm 优先于 points。跨不同 subset spacing 时，物理长度更稳。</li>
+            <li><b>弹性模量 E</b>: 用于 <code>W_global_est = max(0, strain - stress/E) × spacing</code> 的 sanity check。</li>
         </ul>
 
-        <h3 style='color: #e84118;'>二、经典数据异常与排错指南</h3>
+        <h3 style='color: #44BD32;'>二、裂缝识别方法</h3>
         <ul>
-            <li><b>MTS 同步失败：</b>优先检查 DIC 帧间隔、MTS 起始时间、触发延迟和 CSV 时间列单位。</li>
-            <li><b>COD 全部为 0 或 insufficient_cod_samples：</b>若配置要求 v 位移场，请确认 .mat 中确实存在 v_map。
-                本版本会在缺 v 时给出 <code>missing_v_map_required</code> 状态。</li>
-            <li><b>批处理自动匹配为空：</b>系统现在采用严格 token 匹配，避免 E1 误配 E10。匹配不到时请手动指定 MTS CSV。</li>
-            <li><b>裂缝数量异常暴涨：</b>检查 quality_valid_fraction、MAD 阈值、min_crack_area_points 与 COD 底噪阈值。</li>
+            <li><b>strain_or_image</b>: DIC 高 exx 区 + 相机图像 mask 取并集。默认，适合 ECC 细裂缝。</li>
+            <li><b>strain_and_image</b>: 交集。更严格，但可能漏裂缝。</li>
+            <li><b>image_near_strain</b>: 图像裂缝必须靠近 DIC 高应变支撑。</li>
+            <li><b>image_only</b>: 只用图像找裂缝。能跑，但别拿它当主物理方法。</li>
+        </ul>
+        <p>相机图像 mask 只辅助找裂缝位置。主宽度仍来自 DIC 法向位移跳量。照片黑线宽不是神谕。</p>
+
+        <h3 style='color: #e84118;'>三、经典翻车点</h3>
+        <ul>
+            <li><b>MTS 同步失败：</b>检查 DIC 帧间隔、MTS 起始时间、触发延迟和 CSV 时间列单位。</li>
+            <li><b>COD 全部为 0：</b>若配置要求 v 位移场，请确认 .mat 中有 v_map。缺 v 会给出
+                <code>missing_v_map_required</code>。</li>
+            <li><b>图像 mask 没参与：</b>检查 image_crack_detection.enabled、image_dir、filename_pattern，导出 QA 看
+                <code>image_mask_present</code>。</li>
+            <li><b>裂缝数量暴涨：</b>调高 MAD k、min_crack_area_points、COD 底噪，或把融合模式改成 image_near_strain。</li>
         </ul>
         <hr>
         <p style='color: #718093; font-size: 12px;'>Compute first, audit second, publish last.</p>
@@ -177,7 +207,7 @@ class DataPairingDialog(QDialog):
         btn_browse_mts = QPushButton("选择 MTS 目录")
         btn_browse_mts.clicked.connect(self._select_mts_dir)
 
-        btn_auto_match = QPushButton("🤖 一键严格配对")
+        btn_auto_match = QPushButton("一键严格配对")
         btn_auto_match.setStyleSheet("background-color: #2F3640; color: #FFFFFF; font-weight: bold;")
         btn_auto_match.clicked.connect(self._auto_match)
 
@@ -352,7 +382,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("CrackVision-DIC Core Engine")
-        self.resize(680, 900)
+        self.resize(780, 980)
 
         self.worker: Optional[AnalysisPipelineWorker] = None
         self.paired_dict: Dict[str, str] = {}
@@ -376,7 +406,7 @@ class MainWindow(QMainWindow):
             QPushButton#BtnStart { background-color: #2F3640; color: #F5F6FA; font-weight: bold; font-size: 11pt; border: none; }
             QPushButton#BtnStart:hover { background-color: #353B48; }
             QPushButton#BtnStart:disabled { background-color: #718093; }
-            QLineEdit, QDoubleSpinBox { border: 1px solid #DCDDE1; padding: 5px; border-radius: 3px; background-color: #FFFFFF; }
+            QLineEdit, QDoubleSpinBox, QComboBox { border: 1px solid #DCDDE1; padding: 5px; border-radius: 3px; background-color: #FFFFFF; }
             QTextEdit { border: 1px solid #DCDDE1; background-color: #2F3640; color: #F5F6FA; font-family: Consolas, monospace; font-size: 9pt; }
             QProgressBar { border: 1px solid #DCDDE1; border-radius: 3px; text-align: center; background-color: #FFFFFF; }
             QProgressBar::chunk { background-color: #44BD32; }
@@ -403,7 +433,6 @@ class MainWindow(QMainWindow):
         action_manual = QAction("打开用户说明书与排错指南", self)
         action_manual.setShortcut("F1")
         action_manual.triggered.connect(self._show_manual)
-
         help_menu.addAction(action_manual)
 
     def _show_manual(self) -> None:
@@ -413,9 +442,15 @@ class MainWindow(QMainWindow):
     def _init_ui(self) -> None:
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
+        root_layout = QVBoxLayout(central_widget)
+        root_layout.setContentsMargins(12, 12, 12, 12)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        main_layout = QVBoxLayout(content)
+        main_layout.setContentsMargins(16, 16, 16, 16)
+        main_layout.setSpacing(12)
 
         self._init_data_group(main_layout)
         self._init_param_group(main_layout)
@@ -433,7 +468,11 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(QLabel("引擎运行日志 (Engine Logs):", styleSheet="font-weight: bold; color: #2F3640;"))
         self.logger_console = QTextEdit()
         self.logger_console.setReadOnly(True)
+        self.logger_console.setMinimumHeight(180)
         main_layout.addWidget(self.logger_console)
+
+        scroll.setWidget(content)
+        root_layout.addWidget(scroll)
 
     def _init_data_group(self, layout: QVBoxLayout) -> None:
         grp = QGroupBox("I/O 挂载配置")
@@ -465,7 +504,7 @@ class MainWindow(QMainWindow):
         form_single.addRow("DIC 矩阵文件:", h_s_mat)
 
         self.edit_s_mts = QLineEdit()
-        self.edit_s_mts.setPlaceholderText("(无力学数据可留空)")
+        self.edit_s_mts.setPlaceholderText("无力学数据可留空")
         btn_s_mts = QPushButton("浏览")
         btn_s_mts.clicked.connect(lambda: self._select_file(self.edit_s_mts, "CSV Files (*.csv *.CSV)"))
         h_s_mts = QHBoxLayout()
@@ -513,11 +552,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(grp)
 
     def _init_param_group(self, layout: QVBoxLayout) -> None:
-        grp = QGroupBox("物理算子与防线参数")
+        grp = QGroupBox("物理算子、裂缝识别与宽度方法")
         form = QFormLayout()
 
         experiment = self.config.get("experiment", {})
         physics = self.config.get("physics", {})
+        sampling = physics.get("cod_sampling", {}) or {}
+        crack_detection = self.config.get("crack_detection", {}) or {}
+        image_cfg = self.config.get("image_crack_detection", {}) or {}
+
+        form.addRow(self._section_label("基础标定"))
 
         self.spin_gauge_len = QDoubleSpinBox()
         self.spin_gauge_len.setRange(1.0, 1000.0)
@@ -531,7 +575,7 @@ class MainWindow(QMainWindow):
         self.spin_scale.setDecimals(5)
         self.spin_scale.setSingleStep(0.0001)
         self.spin_scale.setValue(float(experiment.get("mm_per_pixel", 0.045)))
-        form.addRow("缺省兜底比例尺 (mm/px):", self.spin_scale)
+        form.addRow("兜底比例尺 (mm/px):", self.spin_scale)
 
         self.spin_interval = QDoubleSpinBox()
         self.spin_interval.setRange(1e-6, 3600.0)
@@ -540,27 +584,146 @@ class MainWindow(QMainWindow):
         self.spin_interval.setValue(float(experiment.get("sampling_interval_s", 5.0)))
         form.addRow("DIC 帧间隔兜底 (s/frame):", self.spin_interval)
 
+        form.addRow(self._section_label("DIC 裂缝与 COD"))
+
         self.spin_cod_min = QDoubleSpinBox()
+        self.spin_cod_min.setRange(0.0, 10.0)
         self.spin_cod_min.setDecimals(4)
         self.spin_cod_min.setSingleStep(0.001)
         self.spin_cod_min.setValue(float(physics.get("cod_min_mm", 0.002)))
-        form.addRow("底噪拦截防线 (mm):", self.spin_cod_min)
+        form.addRow("COD 底噪拦截 (mm):", self.spin_cod_min)
 
         self.spin_k = QDoubleSpinBox()
+        self.spin_k.setRange(0.1, 20.0)
+        self.spin_k.setDecimals(2)
         self.spin_k.setSingleStep(0.1)
         self.spin_k.setValue(float(physics.get("strain_threshold_k", 1.5)))
         form.addRow("MAD 稳健阈值 (k):", self.spin_k)
+
+        self.chk_require_v = QCheckBox("要求 v 位移场；斜裂缝 COD 更靠谱")
+        self.chk_require_v.setChecked(bool(physics.get("require_v_map_for_cod", True)))
+        form.addRow("COD 向量模式:", self.chk_require_v)
+
+        self.spin_delta_mm = QDoubleSpinBox()
+        self.spin_delta_mm.setRange(0.0, 50.0)
+        self.spin_delta_mm.setDecimals(3)
+        self.spin_delta_mm.setSingleStep(0.01)
+        self.spin_delta_mm.setValue(self._optional_float(sampling.get("delta_mm")))
+        form.addRow("COD 起采距离 delta_mm (0=按points):", self.spin_delta_mm)
+
+        self.spin_max_search_mm = QDoubleSpinBox()
+        self.spin_max_search_mm.setRange(0.0, 100.0)
+        self.spin_max_search_mm.setDecimals(3)
+        self.spin_max_search_mm.setSingleStep(0.01)
+        self.spin_max_search_mm.setValue(self._optional_float(sampling.get("max_search_mm")))
+        form.addRow("COD 搜索窗口 max_search_mm (0=按points):", self.spin_max_search_mm)
+
+        self.spin_elastic_modulus = QDoubleSpinBox()
+        self.spin_elastic_modulus.setRange(0.0, 200000.0)
+        self.spin_elastic_modulus.setDecimals(1)
+        self.spin_elastic_modulus.setSingleStep(500.0)
+        self.spin_elastic_modulus.setValue(self._optional_float(physics.get("elastic_modulus_mpa")))
+        form.addRow("弹性模量 E (MPa, 0=不用扣除 σ/E):", self.spin_elastic_modulus)
 
         self.chk_monotonic = QCheckBox("强制全局 DIC 应变单调不下降")
         self.chk_monotonic.setChecked(bool(physics.get("enforce_monotonic_strain", True)))
         form.addRow("应变后处理:", self.chk_monotonic)
 
+        form.addRow(self._section_label("裂缝识别融合"))
+
+        self.combo_fusion = QComboBox()
+        self.combo_fusion.addItems(["strain_or_image", "strain_and_image", "image_near_strain", "image_only", "strain_only"])
+        self._set_combo_current(self.combo_fusion, str(crack_detection.get("fusion_mode", "strain_or_image")))
+        form.addRow("融合模式:", self.combo_fusion)
+
+        self.spin_image_dilate = QDoubleSpinBox()
+        self.spin_image_dilate.setRange(0, 20)
+        self.spin_image_dilate.setDecimals(0)
+        self.spin_image_dilate.setSingleStep(1)
+        self.spin_image_dilate.setValue(float(crack_detection.get("image_dilation_radius_points", 1)))
+        form.addRow("图像 mask 膨胀半径 (DIC points):", self.spin_image_dilate)
+
+        self.chk_strain_support = QCheckBox("图像裂缝必须靠近 DIC 高应变支撑")
+        self.chk_strain_support.setChecked(bool(crack_detection.get("require_strain_support", False)))
+        form.addRow("保守过滤:", self.chk_strain_support)
+
+        form.addRow(self._section_label("相机图像辅助"))
+
+        self.chk_image_enabled = QCheckBox("启用相机图像 crack mask")
+        self.chk_image_enabled.setChecked(bool(image_cfg.get("enabled", False)))
+        self.chk_image_enabled.toggled.connect(self._toggle_image_controls)
+        form.addRow("图像辅助:", self.chk_image_enabled)
+
+        self.edit_image_dir = QLineEdit(str(image_cfg.get("image_dir") or ""))
+        self.edit_image_dir.setPlaceholderText("留空自动找 images/imgs/frames/camera/crack_images；相对路径基于 .mat 所在目录")
+        btn_img_dir = QPushButton("浏览")
+        btn_img_dir.clicked.connect(lambda: self._select_dir(self.edit_image_dir))
+        h_img = QHBoxLayout()
+        h_img.addWidget(self.edit_image_dir)
+        h_img.addWidget(btn_img_dir)
+        form.addRow("图片目录:", h_img)
+        self.btn_image_dir = btn_img_dir
+
+        self.edit_image_pattern = QLineEdit(str(image_cfg.get("filename_pattern") or ""))
+        self.edit_image_pattern.setPlaceholderText("可空。例：frame_{frame:04d}.png")
+        form.addRow("图片命名模板:", self.edit_image_pattern)
+
+        self.spin_frame_offset = QDoubleSpinBox()
+        self.spin_frame_offset.setRange(-100000, 100000)
+        self.spin_frame_offset.setDecimals(0)
+        self.spin_frame_offset.setSingleStep(1)
+        self.spin_frame_offset.setValue(float(image_cfg.get("frame_index_offset", 0)))
+        form.addRow("图像帧偏移:", self.spin_frame_offset)
+
+        self.chk_dark_cracks = QCheckBox("暗裂缝/黑线模式")
+        self.chk_dark_cracks.setChecked(bool(image_cfg.get("dark_cracks", True)))
+        form.addRow("图像阈值方向:", self.chk_dark_cracks)
+
+        form.addRow(self._section_label("输出切片"))
         target_strains = self.config.get("export", {}).get("target_strains", [0.2, 2.0, 4.0, 6.0])
         self.edit_target_strains = QLineEdit(", ".join(str(v) for v in target_strains))
         form.addRow("多梯度切片目标 (%):", self.edit_target_strains)
 
         grp.setLayout(form)
         layout.addWidget(grp)
+        self._toggle_image_controls(self.chk_image_enabled.isChecked())
+
+    @staticmethod
+    def _section_label(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setStyleSheet("font-weight: bold; color: #2F3640; padding-top: 8px;")
+        return label
+
+    @staticmethod
+    def _optional_float(value: object) -> float:
+        if value in (None, ""):
+            return 0.0
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _optional_positive(value: float) -> float | None:
+        return float(value) if value > 0 else None
+
+    @staticmethod
+    def _set_combo_current(combo: QComboBox, value: str) -> None:
+        idx = combo.findText(value)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+    def _toggle_image_controls(self, enabled: bool) -> None:
+        for widget in [
+            getattr(self, "edit_image_dir", None),
+            getattr(self, "btn_image_dir", None),
+            getattr(self, "edit_image_pattern", None),
+            getattr(self, "spin_frame_offset", None),
+            getattr(self, "chk_dark_cracks", None),
+            getattr(self, "spin_image_dilate", None),
+            getattr(self, "chk_strain_support", None),
+        ]:
+            if widget is not None:
+                widget.setEnabled(enabled)
 
     def _select_dir(self, line_edit: QLineEdit) -> None:
         dialog = QFileDialog(self, "选择目录")
@@ -614,7 +777,7 @@ class MainWindow(QMainWindow):
             reply = QMessageBox.question(
                 self,
                 "高危操作确认",
-                "您将底噪拦截防线设为了 0 mm。\n这会让大量 DIC 插值噪声混入统计。\n\n是否坚持使用 0 mm？",
+                "你把 COD 底噪拦截设成了 0 mm。\nDIC 插值噪声会大摇大摆进表。\n\n坚持使用 0 mm？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -624,15 +787,40 @@ class MainWindow(QMainWindow):
 
         try:
             target_strains = [float(s.strip()) for s in self.edit_target_strains.text().split(",") if s.strip()]
+            if not target_strains:
+                raise ValueError("empty target strains")
+
             self.config.setdefault("export", {})["target_strains"] = target_strains
-            self.config.setdefault("experiment", {})["gauge_length_mm"] = gauge_len
-            self.config["experiment"]["mm_per_pixel"] = scale_val
-            self.config["experiment"]["sampling_interval_s"] = sampling_interval
-            self.config.setdefault("physics", {})["strain_threshold_k"] = self.spin_k.value()
-            self.config["physics"]["cod_min_mm"] = cod_min
-            self.config["physics"]["enforce_monotonic_strain"] = self.chk_monotonic.isChecked()
+
+            experiment = self.config.setdefault("experiment", {})
+            experiment["gauge_length_mm"] = gauge_len
+            experiment["mm_per_pixel"] = scale_val
+            experiment["sampling_interval_s"] = sampling_interval
+
+            physics = self.config.setdefault("physics", {})
+            physics["strain_threshold_k"] = self.spin_k.value()
+            physics["cod_min_mm"] = cod_min
+            physics["enforce_monotonic_strain"] = self.chk_monotonic.isChecked()
+            physics["require_v_map_for_cod"] = self.chk_require_v.isChecked()
+            physics["elastic_modulus_mpa"] = self._optional_positive(self.spin_elastic_modulus.value())
+
+            sampling = physics.setdefault("cod_sampling", {})
+            sampling["delta_mm"] = self._optional_positive(self.spin_delta_mm.value())
+            sampling["max_search_mm"] = self._optional_positive(self.spin_max_search_mm.value())
+
+            crack_detection = self.config.setdefault("crack_detection", {})
+            crack_detection["fusion_mode"] = self.combo_fusion.currentText()
+            crack_detection["image_dilation_radius_points"] = int(self.spin_image_dilate.value())
+            crack_detection["require_strain_support"] = self.chk_strain_support.isChecked()
+
+            image_cfg = self.config.setdefault("image_crack_detection", {})
+            image_cfg["enabled"] = self.chk_image_enabled.isChecked()
+            image_cfg["image_dir"] = self.edit_image_dir.text().strip() or None
+            image_cfg["filename_pattern"] = self.edit_image_pattern.text().strip() or None
+            image_cfg["frame_index_offset"] = int(self.spin_frame_offset.value())
+            image_cfg["dark_cracks"] = self.chk_dark_cracks.isChecked()
         except ValueError:
-            QMessageBox.warning(self, "格式错误", "参数解析失败，请确保梯度输入如 '0.2, 2.0, 4.0' 的格式。")
+            QMessageBox.warning(self, "格式错误", "参数解析失败。目标应变请写成 0.2, 2.0, 4.0 这种格式。")
             return
 
         process_dict = {}
@@ -640,6 +828,9 @@ class MainWindow(QMainWindow):
             mat_f = self.edit_s_mat.text().strip()
             if not mat_f:
                 QMessageBox.warning(self, "中断", "单次模式下必须指定 MAT 文件。")
+                return
+            if not Path(mat_f).exists():
+                QMessageBox.warning(self, "中断", "MAT 文件不存在。")
                 return
             process_dict[mat_f] = self.edit_s_mts.text().strip()
         else:
@@ -654,18 +845,25 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.logger_console.clear()
 
-        self.logger_console.append(f"🟢 [Pre-flight Check] 体检通过。待计算队列总数: {len(process_dict)} 组。")
+        self.logger_console.append(f"[Pre-flight] 队列: {len(process_dict)} 组")
         self.logger_console.append(
-            f"🔧 标距: {gauge_len:.1f} mm | 帧间隔兜底: {sampling_interval:.4f} s | COD 底噪: {cod_min:.4f} mm"
+            f"[Core] 标距={gauge_len:.1f} mm | 帧间隔={sampling_interval:.4f} s | COD底噪={cod_min:.4f} mm | require_v={self.chk_require_v.isChecked()}"
         )
+        self.logger_console.append(
+            f"[Crack] fusion={self.combo_fusion.currentText()} | image_mask={self.chk_image_enabled.isChecked()} | E={physics.get('elastic_modulus_mpa') or 'none'} MPa"
+        )
+        if self.chk_image_enabled.isChecked():
+            self.logger_console.append(
+                f"[Image] dir={self.edit_image_dir.text().strip() or 'auto-discover'} | pattern={self.edit_image_pattern.text().strip() or 'sorted/auto'}"
+            )
         self.logger_console.append("-" * 50)
 
         self.worker = AnalysisPipelineWorker(process_dict, Path(out_dir_str), self.config)
-        self.worker.error_occurred.connect(lambda err: self.logger_console.append(f"\n🔴 [FATAL] {err}"))
+        self.worker.error_occurred.connect(lambda err: self.logger_console.append(f"\n[FATAL] {err}"))
         self.worker.log_emitted.connect(self.logger_console.append)
         self.worker.progress_updated.connect(self._update_progress)
         self.worker.specimen_processed.connect(
-            lambda p1, p2: self.logger_console.append(f"🟢 [SUCCESS] 数据已安全落盘: {Path(p1).stem}")
+            lambda p1, p2: self.logger_console.append(f"[SUCCESS] 数据已落盘: {Path(p1).stem}")
         )
         self.worker.finished.connect(self._on_pipeline_finished)
         self.worker.start()

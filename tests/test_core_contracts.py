@@ -1,5 +1,7 @@
 import numpy as np
+import pandas as pd
 
+from src.core.image_crack import ImageCrackMaskProvider, image_area_skeleton_width_mm
 from src.core.io_sync import PipelineIO
 from src.core.physics import CrackPhysicsEngine
 from src.gui.worker import AnalysisPipelineWorker
@@ -53,3 +55,251 @@ def test_frame_time_prefers_mat_metadata():
 
     assert time_s == 1.25
     assert source == "mat_metadata_time"
+
+
+def test_image_mask_can_assist_strain_crack_detection():
+    config = {
+        "physics": {"min_crack_area_points": 3, "strain_threshold_k": 3.0},
+        "crack_detection": {"fusion_mode": "strain_or_image", "image_dilation_radius_points": 0},
+    }
+    engine = CrackPhysicsEngine(config)
+    exx = np.zeros((20, 20), dtype=float)
+    valid = np.ones_like(exx, dtype=bool)
+    image_mask = np.zeros_like(valid)
+    image_mask[5:15, 10] = True
+
+    skeleton, threshold, source, image_fraction = engine.extract_skeleton(exx, valid, image_crack_mask=image_mask)
+
+    assert threshold > 0
+    assert source == "strain_or_image"
+    assert image_fraction > 0
+    assert np.count_nonzero(skeleton) > 0
+
+
+def test_strain_only_fusion_ignores_image_mask():
+    config = {
+        "physics": {"min_crack_area_points": 3, "strain_threshold_k": 3.0},
+        "crack_detection": {"fusion_mode": "strain_only", "image_dilation_radius_points": 0},
+    }
+    engine = CrackPhysicsEngine(config)
+    exx = np.zeros((20, 20), dtype=float)
+    valid = np.ones_like(exx, dtype=bool)
+    image_mask = np.zeros_like(valid)
+    image_mask[5:15, 10] = True
+
+    skeleton, _, source, image_fraction = engine.extract_skeleton(exx, valid, image_crack_mask=image_mask)
+
+    assert source == "strain_only"
+    assert image_fraction > 0
+    assert np.count_nonzero(skeleton) == 0
+
+
+def test_image_near_strain_source_name_matches_ui_option():
+    config = {
+        "physics": {"min_crack_area_points": 1, "strain_threshold_k": 1.0, "min_cracking_strain": 1e-6},
+        "crack_detection": {"fusion_mode": "image_near_strain", "image_dilation_radius_points": 1},
+    }
+    engine = CrackPhysicsEngine(config)
+    exx = np.zeros((20, 20), dtype=float)
+    exx[8:12, 10] = 0.01
+    valid = np.ones_like(exx, dtype=bool)
+    image_mask = np.zeros_like(valid)
+    image_mask[5:15, 10] = True
+
+    skeleton, _, source, _ = engine.extract_skeleton(exx, valid, image_crack_mask=image_mask)
+
+    assert source == "image_near_strain"
+    assert np.count_nonzero(skeleton) > 0
+
+
+def test_image_provider_prioritizes_offset_frame_for_filename_pattern(tmp_path):
+    (tmp_path / "frame_0000.png").write_bytes(b"placeholder")
+    (tmp_path / "frame_0002.png").write_bytes(b"placeholder")
+    provider = ImageCrackMaskProvider(
+        {
+            "image_crack_detection": {
+                "enabled": True,
+                "image_dir": str(tmp_path),
+                "filename_pattern": "frame_{frame:04d}.png",
+                "frame_index_offset": 2,
+            }
+        },
+        tmp_path / "A.mat",
+    )
+
+    selected = provider._file_for_frame(0)
+
+    assert selected is not None
+    assert selected.name == "frame_0002.png"
+
+
+def test_cod_exports_median_and_p95_widths():
+    config = {
+        "physics": {
+            "cod_min_mm": 0.0,
+            "cod_min_mean_mm": 0.0,
+            "cod_max_mm": 1.0,
+            "min_crack_length_mm": 0.1,
+            "cod_sampling": {"delta_px": 3, "max_search_px": 4},
+        }
+    }
+    engine = CrackPhysicsEngine(config)
+    u = np.zeros((30, 30), dtype=float)
+    v = np.zeros((30, 30), dtype=float)
+    v[13:, :] = 1.0
+    skeleton = np.zeros((30, 30), dtype=bool)
+    skeleton[10, 5:25] = True
+
+    result = engine.compute_cod(u, skeleton, 0.01, 0.01, v_map=v)
+
+    assert result["crack_count"] == 1
+    assert np.isclose(result["w_median"], 0.01)
+    assert np.isclose(result["w_95"], 0.01)
+    assert "W_median_mm" in result["per_crack_details"].columns
+    assert "W_95_mm" in result["per_crack_details"].columns
+
+
+def test_image_area_skeleton_width_is_area_over_length():
+    mask = np.zeros((20, 20), dtype=bool)
+    mask[5:15, 9:11] = True
+
+    area_mm2, length_mm, width_mm = image_area_skeleton_width_mm(mask, dic_point_spacing_mm=0.1)
+
+    assert area_mm2 > 0
+    assert length_mm > 0
+    assert width_mm > 0
+
+
+def test_export_frame_table_drops_object_payloads_and_keeps_plot_columns():
+    df = pd.DataFrame(
+        [
+            {
+                "Frame": 0,
+                "Time_s": 0.0,
+                "global_strain": 0.0,
+                "w_avg": 0.0,
+                "w_median": 0.0,
+                "w_95": 0.0,
+                "w_99": 0.0,
+                "w_max": 0.0,
+                "W_global_est_um": 0.0,
+                "crack_count": 0,
+                "raw_widths": np.array([]),
+                "per_crack_details": pd.DataFrame(),
+                "cod_status": "no_skeleton",
+                "sync_status": "no_mts",
+            },
+            {
+                "Frame": 1,
+                "Time_s": 5.0,
+                "global_strain": 0.02,
+                "w_avg": 0.012,
+                "w_median": 0.011,
+                "w_95": 0.025,
+                "w_99": 0.030,
+                "w_max": 0.040,
+                "W_global_est_um": 18.0,
+                "crack_count": 3,
+                "raw_widths": np.array([0.012]),
+                "per_crack_details": pd.DataFrame({"Crack_ID": [1]}),
+                "cod_status": "ok",
+                "sync_status": "synced",
+            },
+        ]
+    )
+
+    out = AnalysisPipelineWorker._prepare_frame_table("S1", df)
+
+    assert "raw_widths" not in out.columns
+    assert "per_crack_details" not in out.columns
+    assert out.loc[1, "Strain_pct"] == 2.0
+    assert out.loc[1, "W_avg_um"] == 12.0
+    assert out.loc[1, "W_median_um"] == 11.0
+    assert out.loc[1, "W_95_um"] == 25.0
+    assert out.loc[1, "W_99_um"] == 30.0
+    assert out.loc[1, "W_max_um"] == 40.0
+    assert out.loc[1, "W_global_est_um"] == 18.0
+    assert out.loc[1, "Normalized_Strain"] == 1.0
+
+
+def test_global_width_estimate_can_subtract_elastic_strain():
+    worker = AnalysisPipelineWorker({}, None, {"physics": {"elastic_modulus_mpa": 20000.0}})
+    df = pd.DataFrame(
+        {
+            "global_strain": [0.002, 0.004],
+            "Stress_MPa": [20.0, 40.0],
+            "crack_spacing_mm": [10.0, 10.0],
+            "crack_count": [2, 2],
+        }
+    )
+
+    out = worker._add_global_width_estimate(df)
+
+    assert np.allclose(out["W_global_est_um"], [10.0, 20.0])
+    assert (out["global_width_estimate_mode"] == "strain_minus_sigma_over_E").all()
+
+
+def test_target_state_table_keeps_not_reached_rows():
+    worker = AnalysisPipelineWorker({}, None, {"export": {"target_strains": [1.0, 3.0]}})
+    frame_df = pd.DataFrame(
+        [
+            {
+                "Specimen": "S1",
+                "Frame": 0,
+                "Time_s": 0.0,
+                "Strain_pct": 0.0,
+                "Normalized_Strain": 0.0,
+                "crack_count": 0,
+                "crack_spacing_mm": 0.0,
+                "W_avg_um": 0.0,
+                "W_median_um": 0.0,
+                "W_95_um": 0.0,
+                "W_99_um": 0.0,
+                "W_max_um": 0.0,
+            },
+            {
+                "Specimen": "S1",
+                "Frame": 1,
+                "Time_s": 5.0,
+                "Strain_pct": 2.0,
+                "Normalized_Strain": 1.0,
+                "crack_count": 4,
+                "crack_spacing_mm": 20.0,
+                "W_avg_um": 15.0,
+                "W_median_um": 14.0,
+                "W_95_um": 34.0,
+                "W_99_um": 35.0,
+                "W_max_um": 40.0,
+            },
+        ]
+    )
+
+    targets = worker._build_target_state_table("S1", frame_df)
+
+    assert list(targets["Status"]) == ["reached", "not_reached"]
+    assert list(targets["Target_Strain_pct"]) == [1.0, 3.0]
+    assert targets.loc[1, "Real_Strain_pct"] == 2.0
+
+
+def test_crack_distribution_is_tidy_long_format():
+    crack_tidy = pd.DataFrame(
+        [
+            {
+                "Specimen": "S1",
+                "State": "Ultimate",
+                "Crack_ID": 1,
+                "Frame": 10,
+                "Real_Strain_pct": 2.5,
+                "W_median_um": 11.0,
+                "W_avg_um": 12.0,
+                "W_95_um": 25.0,
+                "W_max_um": 30.0,
+            }
+        ]
+    )
+
+    dist = AnalysisPipelineWorker._build_distribution_table(crack_tidy)
+
+    assert list(dist["Metric"]) == ["W_median_um", "W_avg_um", "W_95_um", "W_max_um"]
+    assert list(dist["Value_um"]) == [11.0, 12.0, 25.0, 30.0]
+    assert set(["Specimen", "State", "Metric", "Value_um", "Crack_ID"]).issubset(dist.columns)
