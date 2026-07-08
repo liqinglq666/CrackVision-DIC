@@ -99,7 +99,9 @@ class EvolutionAnalyzer:
             raise ValueError("MTS file contains no data rows.")
 
         df.columns = [str(col).strip() for col in df.columns]
+        unit_hints: dict[str, str] = {}
         if df.iloc[0].astype(str).str.contains(r"mm|sec|kn|mpa| n$|^n$", case=False, regex=True).any():
+            unit_hints = {col: str(df.iloc[0][col]).strip().lower() for col in df.columns}
             df = df.drop(0).reset_index(drop=True)
 
         columns = list(df.columns)
@@ -123,7 +125,8 @@ class EvolutionAnalyzer:
             raise ValueError("MTS data contains no valid time/force samples.")
 
         force = np.abs(clean["Force_N"].to_numpy(dtype=float))
-        if "kn" in force_col.lower() or np.nanmax(force) < 100.0:
+        force_unit = unit_hints.get(force_col, "")
+        if "kn" in force_col.lower() or force_unit == "kn":
             force = force * 1000.0
         clean["Force_N"] = force
         clean["Stress_MPa"] = force / self.area_mm2

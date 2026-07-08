@@ -117,6 +117,7 @@ def analyze_single_frame_task(payload: FrameTaskPayload) -> Optional[Dict[str, A
                 payload.ratio,
                 payload.dic_point_spacing_mm,
                 v_map=v,
+                sample_mask=quality_mask,
             )
 
         res.update(

@@ -64,6 +64,7 @@ def _fast_cod_kernel(
     x_coords: np.ndarray,
     u_map: np.ndarray,
     v_map: np.ndarray,
+    sample_mask: np.ndarray,
     has_v: bool,
     require_v: bool,
     skeleton: np.ndarray,
@@ -87,10 +88,13 @@ def _fast_cod_kernel(
         v_p, v_n = np.nan, np.nan
 
         for d in range(start_d, end_d):
-            u_val = _bilinear_interp(u_map, yc + ny * d, xc + nx * d)
+            yp, xp = yc + ny * d, xc + nx * d
+            if _bilinear_interp(sample_mask, yp, xp) < 0.999:
+                continue
+            u_val = _bilinear_interp(u_map, yp, xp)
             if not np.isnan(u_val):
                 if has_v:
-                    v_val = _bilinear_interp(v_map, yc + ny * d, xc + nx * d)
+                    v_val = _bilinear_interp(v_map, yp, xp)
                     if np.isnan(v_val):
                         continue
                     v_p = v_val
@@ -98,10 +102,13 @@ def _fast_cod_kernel(
                 break
 
         for d in range(start_d, end_d):
-            u_val = _bilinear_interp(u_map, yc - ny * d, xc - nx * d)
+            yn, xn = yc - ny * d, xc - nx * d
+            if _bilinear_interp(sample_mask, yn, xn) < 0.999:
+                continue
+            u_val = _bilinear_interp(u_map, yn, xn)
             if not np.isnan(u_val):
                 if has_v:
-                    v_val = _bilinear_interp(v_map, yc - ny * d, xc - nx * d)
+                    v_val = _bilinear_interp(v_map, yn, xn)
                     if np.isnan(v_val):
                         continue
                     v_n = v_val
@@ -214,6 +221,7 @@ class CrackPhysicsEngine:
         displacement_scale_mm: float,
         dic_point_spacing_mm: float,
         v_map: np.ndarray | None = None,
+        sample_mask: np.ndarray | None = None,
     ) -> Dict[str, Any]:
         labels = measure.label(skeleton, connectivity=2)
         y_c, x_c = np.where(skeleton)
@@ -222,6 +230,15 @@ class CrackPhysicsEngine:
 
         has_v = v_map is not None
         v_data = np.ascontiguousarray(v_map) if has_v else np.zeros_like(u_map)
+        if sample_mask is None:
+            sample_mask_data = np.isfinite(u_map)
+            if has_v:
+                sample_mask_data &= np.isfinite(v_map)
+        else:
+            sample_mask_data = np.asarray(sample_mask, dtype=bool) & np.isfinite(u_map)
+            if has_v:
+                sample_mask_data &= np.isfinite(v_map)
+        sample_mask_float = np.ascontiguousarray(sample_mask_data.astype(np.float64))
         delta_points, max_search_points = self._sampling_points(dic_point_spacing_mm)
 
         widths, valid_idx = _fast_cod_kernel(
@@ -229,6 +246,7 @@ class CrackPhysicsEngine:
             np.ascontiguousarray(x_c),
             np.ascontiguousarray(u_map),
             v_data,
+            sample_mask_float,
             has_v,
             self.require_v,
             np.ascontiguousarray(skeleton),
@@ -250,7 +268,10 @@ class CrackPhysicsEngine:
 
         df = pd.DataFrame({"Crack_ID": labels[y_c, x_c][valid_idx], "W": widths})
         summary = df.groupby("Crack_ID")["W"].agg(["mean", "max", "count"]).reset_index()
-        summary["L_mm"] = summary["count"] * float(dic_point_spacing_mm)
+        lengths = _crack_lengths_mm(labels, float(dic_point_spacing_mm))
+        summary["L_mm"] = summary["Crack_ID"].map(lengths).fillna(
+            summary["count"] * float(dic_point_spacing_mm)
+        )
         summary = summary[
             (summary["L_mm"] >= self.min_length_mm)
             & (summary["max"] >= self.cod_min)
@@ -293,3 +314,24 @@ class CrackPhysicsEngine:
             "delta_points": int(self.delta_points),
             "max_search_points": int(self.max_search_points),
         }
+
+
+def _crack_lengths_mm(labels: np.ndarray, dic_point_spacing_mm: float) -> dict[int, float]:
+    lengths: dict[int, float] = {}
+    for crack_id in np.unique(labels):
+        if crack_id == 0:
+            continue
+        y_coords, x_coords = np.where(labels == crack_id)
+        points = set(zip(y_coords.tolist(), x_coords.tolist()))
+        total_steps = 0.0
+        for y, x in points:
+            if (y, x + 1) in points:
+                total_steps += 1.0
+            if (y + 1, x) in points:
+                total_steps += 1.0
+            if (y + 1, x + 1) in points:
+                total_steps += np.sqrt(2.0)
+            if (y + 1, x - 1) in points:
+                total_steps += np.sqrt(2.0)
+        lengths[int(crack_id)] = float(total_steps * dic_point_spacing_mm)
+    return lengths
