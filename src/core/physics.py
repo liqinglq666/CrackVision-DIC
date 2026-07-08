@@ -137,9 +137,12 @@ def _fast_cod_kernel(
 
 class CrackPhysicsEngine:
     def __init__(self, config: dict):
+        self.config = config
         phys = config.get("physics", {})
         sampling = phys.get("cod_sampling", {})
         quality = config.get("quality", {})
+        crack_detection = config.get("crack_detection", {}) or {}
+
         self.k = float(phys.get("strain_threshold_k", phys.get("mad_k", 2.0)))
         self.min_s = float(phys.get("min_cracking_strain", 1.5e-4))
         self.max_s = float(phys.get("max_cracking_strain_threshold", 0.03))
@@ -158,6 +161,11 @@ class CrackPhysicsEngine:
         self.quality_mode = str(quality.get("metric_mode", "finite_only"))
         self.quality_threshold = quality.get("threshold")
         self.min_valid_fraction = float(quality.get("min_valid_fraction", 0.2))
+
+        self.fusion_mode = str(crack_detection.get("fusion_mode", "strain_or_image")).lower()
+        self.image_dilation_radius = int(crack_detection.get("image_dilation_radius_points", 1))
+        self.strain_dilation_radius = int(crack_detection.get("strain_dilation_radius_points", 0))
+        self.require_strain_support = bool(crack_detection.get("require_strain_support", False))
 
         if self.cod_max <= 0:
             raise ValueError("physics.cod_max_mm must be greater than zero.")
@@ -194,25 +202,68 @@ class CrackPhysicsEngine:
         fraction = float(np.count_nonzero(finite) / base) if base > 0 else 0.0
         return finite, fraction, reason
 
-    def extract_skeleton(self, exx: np.ndarray, valid_mask: np.ndarray) -> tuple[np.ndarray, float]:
+    def extract_skeleton(
+        self,
+        exx: np.ndarray,
+        valid_mask: np.ndarray,
+        image_crack_mask: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, float, str, float]:
         valid = valid_mask & np.isfinite(exx)
         clean_exx = exx[valid]
         if clean_exx.size == 0:
-            return np.zeros_like(exx, dtype=bool), 0.0
+            return np.zeros_like(exx, dtype=bool), 0.0, "empty_valid_exx", 0.0
 
         median = float(np.median(clean_exx))
         mad = float(np.median(np.abs(clean_exx - median)))
         robust_sigma = mad * 1.4826
         threshold = float(np.clip(median + self.k * robust_sigma, self.min_s, self.max_s))
 
+        strain_zone = (exx > threshold) & valid
+        if self.strain_dilation_radius > 0:
+            strain_zone = morphology.binary_dilation(strain_zone, morphology.disk(self.strain_dilation_radius)) & valid
+
+        image_zone = None
+        image_fraction = 0.0
+        if image_crack_mask is not None:
+            image_zone = np.asarray(image_crack_mask, dtype=bool)
+            if image_zone.shape != valid.shape:
+                raise ValueError(f"image_crack_mask shape {image_zone.shape} does not match DIC shape {valid.shape}.")
+            if self.image_dilation_radius > 0:
+                image_zone = morphology.binary_dilation(image_zone, morphology.disk(self.image_dilation_radius))
+            image_zone &= valid
+            image_fraction = float(np.count_nonzero(image_zone) / max(1, np.count_nonzero(valid)))
+
         internal_nans = np.zeros_like(valid_mask, dtype=bool)
         if self.closing_radius > 0:
             closed_mask = morphology.closing(valid_mask, morphology.disk(self.closing_radius))
             internal_nans = closed_mask & (~valid_mask)
 
-        damage_zone = ((exx > threshold) & valid) | internal_nans
-        cleaned = morphology.remove_small_objects(damage_zone, min_size=self.min_area)
-        return morphology.skeletonize(cleaned), threshold
+        if image_zone is None or not np.any(image_zone):
+            damage_zone = strain_zone | internal_nans
+            source = "strain_only"
+        elif self.fusion_mode in {"image_only", "image"}:
+            damage_zone = image_zone | internal_nans
+            source = "image_only"
+        elif self.fusion_mode in {"intersection", "and", "strain_and_image"}:
+            damage_zone = (strain_zone & image_zone) | internal_nans
+            source = "strain_and_image"
+        elif self.fusion_mode in {"image_near_strain", "supported_image"}:
+            support = morphology.binary_dilation(strain_zone, morphology.disk(max(1, self.image_dilation_radius)))
+            damage_zone = (strain_zone | (image_zone & support)) | internal_nans
+            source = "strain_or_supported_image"
+        else:
+            # Default: union. Thin ECC cracks are easy to miss in one modality.
+            # Union catches more; downstream COD/length/COD-floor filters do the cleanup.
+            damage_zone = (strain_zone | image_zone) | internal_nans
+            source = "strain_or_image"
+
+        if self.require_strain_support and image_zone is not None and np.any(image_zone):
+            support = morphology.binary_dilation(strain_zone, morphology.disk(max(1, self.image_dilation_radius)))
+            damage_zone &= support
+            source += "+strain_support"
+
+        cleaned = morphology.remove_small_objects(damage_zone.astype(bool), min_size=self.min_area)
+        return morphology.skeletonize(cleaned), threshold, source, image_fraction
 
     def _sampling_points(self, dic_point_spacing_mm: float) -> tuple[int, int]:
         if not np.isfinite(dic_point_spacing_mm) or dic_point_spacing_mm <= 0:
@@ -281,7 +332,8 @@ class CrackPhysicsEngine:
             return self._empty("cod_out_of_range", delta_points, max_search_points)
 
         df = pd.DataFrame({"Crack_ID": labels[y_c, x_c][valid_idx], "W": widths})
-        summary = df.groupby("Crack_ID")["W"].agg(["mean", "max", "count"]).reset_index()
+        summary = df.groupby("Crack_ID")["W"].agg(["mean", "median", "max", "count"]).reset_index()
+        summary["p95"] = df.groupby("Crack_ID")["W"].quantile(0.95).to_numpy()
         lengths = _crack_lengths_mm(labels, float(dic_point_spacing_mm))
         summary["L_mm"] = summary["Crack_ID"].map(lengths).fillna(
             summary["count"] * float(dic_point_spacing_mm)
@@ -299,10 +351,20 @@ class CrackPhysicsEngine:
         raw = df[df["Crack_ID"].isin(valid_ids)]["W"].to_numpy()
         raw = raw[(raw >= self.cod_min * 0.5) & (raw <= self.cod_max)]
 
-        details = summary.rename(columns={"mean": "W_avg_mm", "max": "W_max_mm", "L_mm": "Length_mm"})
+        details = summary.rename(
+            columns={
+                "mean": "W_avg_mm",
+                "median": "W_median_mm",
+                "p95": "W_95_mm",
+                "max": "W_max_mm",
+                "L_mm": "Length_mm",
+            }
+        )
         return {
             "crack_count": int(len(summary)),
             "w_avg": float(summary["mean"].mean()),
+            "w_median": float(summary["median"].median()),
+            "w_95": float(summary["p95"].quantile(0.95)),
             "w_max": float(summary["max"].max()),
             "w_99": float(np.percentile(raw, 99)) if raw.size > 0 else 0.0,
             "raw_widths": raw,
@@ -323,6 +385,8 @@ class CrackPhysicsEngine:
         return {
             "crack_count": 0,
             "w_avg": 0.0,
+            "w_median": 0.0,
+            "w_95": 0.0,
             "w_max": 0.0,
             "w_99": 0.0,
             "raw_widths": np.array([], dtype=float),
