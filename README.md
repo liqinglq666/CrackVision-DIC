@@ -88,15 +88,15 @@ dic_point_spacing_mm = pixel_size_mm * subset_spacing_px
 
 每一帧先建立有效计算域：
 
-$$
+```math
 \Omega_q = \Omega_{mask} \cap finite(u) \cap finite(v) \cap Q
-$$
+```
 
 其中 `Q` 可以来自 DIC quality map。若没有质量图，系统采用 `finite_only` 策略，只保留位移场和应变场数值有效的区域。有效比例定义为：
 
-$$
+```math
 r_q = \frac{|\Omega_q|}{|\Omega_{mask}|}
-$$
+```
 
 当 `r_q` 低于 `quality.min_valid_fraction` 时，该帧会被标记为 `quality_rejected`，避免失相关区域污染 crack statistics。
 
@@ -104,28 +104,28 @@ $$
 
 裂缝候选区域由 `exx` 场的稳健统计阈值提取。系统不直接使用均值和标准差，因为裂缝尖端和局部失相关容易产生 heavy-tail noise。默认使用 median absolute deviation：
 
-$$
+```math
 \tilde{\varepsilon} = median(\varepsilon_{xx})
-$$
+```
 
-$$
+```math
 MAD = median(|\varepsilon_{xx} - \tilde{\varepsilon}|)
-$$
+```
 
-$$
+```math
 \varepsilon_{th}
 = clip\left(
 \tilde{\varepsilon} + k \cdot 1.4826 \cdot MAD,\;
 \varepsilon_{min},\;
 \varepsilon_{max}
 \right)
-$$
+```
 
 候选裂缝域为：
 
-$$
+```math
 \Omega_c = \{(x,y)\in\Omega_q \mid \varepsilon_{xx}(x,y) > \varepsilon_{th}\}
-$$
+```
 
 随后执行 small-object filtering 与 skeletonization，将二维高应变带压缩为一像素宽的 crack skeleton。
 
@@ -143,23 +143,23 @@ flowchart TD
 
 对骨架点 $(x_c,y_c)$，系统在局部 $3\times3$ 邻域内估计 crack tangent，再取正交方向作为 sampling normal。局部协方差量为：
 
-$$
+```math
 S_{xx}=\sum (x_i-\bar{x})^2,\quad
 S_{yy}=\sum (y_i-\bar{y})^2,\quad
 S_{xy}=\sum (x_i-\bar{x})(y_i-\bar{y})
-$$
+```
 
 骨架主方向角：
 
-$$
+```math
 \theta=\frac{1}{2}\arctan2(2S_{xy}, S_{xx}-S_{yy})
-$$
+```
 
 法向向量：
 
-$$
+```math
 \mathbf n=(-\sin\theta,\cos\theta)
-$$
+```
 
 这一步的意义是让 COD sampling line 与裂缝走向保持正交，而不是固定沿水平或竖直方向采样。
 
@@ -167,13 +167,13 @@ $$
 
 裂缝宽度采用跨裂缝两侧的法向位移跳量：
 
-$$
+```math
 w = \left| \Delta\mathbf u \cdot \mathbf n \right| \cdot s_p
-$$
+```
 
 其中：
 
-$$
+```math
 \Delta\mathbf u =
 \begin{bmatrix}
 u^+ - u^- \\
@@ -187,7 +187,7 @@ n_y
 \end{bmatrix},
 \quad
 s_p = pixel\_size\_mm
-$$
+```
 
 展开为代码中的计算式：
 
@@ -209,40 +209,40 @@ physics:
 
 骨架连通域被标记为独立 crack objects。每条裂缝的长度、平均宽度、最大宽度由其骨架采样点统计：
 
-$$
+```math
 L_i = N_i \cdot dic\_point\_spacing\_mm
-$$
+```
 
-$$
+```math
 \bar{w}_i=\frac{1}{N_i}\sum_{j=1}^{N_i} w_{ij},\quad
 w_i^{max}=\max_j(w_{ij})
-$$
+```
 
 对象级过滤条件：
 
-$$
+```math
 L_i \ge L_{min},\quad
 w_i^{max} \ge w_{min},\quad
 \bar{w}_i \ge \bar{w}_{min}
-$$
+```
 
 帧级统计：
 
-$$
+```math
 N_c = count(crack_i)
-$$
+```
 
-$$
+```math
 W_{avg}=mean(\bar{w}_i),\quad
 W_{max}=\max(w_i^{max}),\quad
 W_{99}=P_{99}(\{w_{ij}\})
-$$
+```
 
 ### 7. Virtual extensometer：DIC 全局应变
 
 系统默认从 DIC 位移场中构造 virtual extensometer。它在有效区域左右两侧取竖向采样带，使用中位数位移差估计全局拉伸应变：
 
-$$
+```math
 \varepsilon_{DIC}
 =
 \frac{
@@ -250,13 +250,13 @@ $$
 }{
 L_0
 }
-$$
+```
 
 若配置了 `virtual_extensometer.gauge_length_mm`，则使用该标距；否则由左右采样带在 DIC grid 中的距离自动估算：
 
-$$
+```math
 L_0 = |x_R-x_L| \cdot dic\_point\_spacing\_mm
-$$
+```
 
 ```yaml
 experiment:
@@ -271,26 +271,26 @@ experiment:
 
 MTS 数据通过时间轴插值映射到 DIC 帧。同步不是无条件 extrapolation，而是先检查时间范围重叠：
 
-$$
+```math
 \rho_t =
 \frac{
 \min(t_{DIC}^{max}, t_{MTS}^{max})-\max(t_{DIC}^{min}, t_{MTS}^{min})
 }{
 t_{DIC}^{max}-t_{DIC}^{min}
 }
-$$
+```
 
 仅当：
 
-$$
+```math
 \rho_t \ge \rho_{min}
-$$
+```
 
 才执行同步。应力换算为：
 
-$$
+```math
 \sigma(t)=\frac{|F(t)|}{A}
-$$
+```
 
 若 MTS force 列以 kN 表示，系统会转为 N 后再除以截面积 `cross_section_area_mm2`，得到 MPa。
 
@@ -436,17 +436,17 @@ Frame,crack_count,W_avg_um,W_max_um
 
 系统会在 `06_Validation` 中输出：
 
-$$
+```math
 MAE=\frac{1}{n}\sum_{i=1}^{n}|x_i^{calc}-x_i^{manual}|
-$$
+```
 
-$$
+```math
 Bias=\frac{1}{n}\sum_{i=1}^{n}(x_i^{calc}-x_i^{manual})
-$$
+```
 
-$$
+```math
 MaxAbsError=\max_i |x_i^{calc}-x_i^{manual}|
-$$
+```
 
 ## 安装与运行
 
