@@ -27,6 +27,7 @@ MTS .csv                     # 可选
 ```text
 [Specimen]_Origin_Plot_Data.xlsx
 [Specimen]_Statistics_Report.xlsx
+_Batch_Summary.xlsx
 ```
 
 算这些：
@@ -230,33 +231,65 @@ filter by length / COD floor / COD ceiling
 
 ## 输出文件
 
-### `[Specimen]_Origin_Plot_Data.xlsx`
-
-给 Origin / Python 画图用。
+导出逻辑已经改成更适合画图和批量汇总的排布。核心原则：
 
 ```text
-Fig1_Dynamics      # strain - crack_count - spacing - width
-Fig2_Normalized    # normalized strain curves
-Fig3_Distribution  # saturated / ultimate width distribution
-Fig4_Gradient      # target strain slices
+逐帧数据 -> 一行一帧
+裂缝数据 -> 一行一条裂缝
+分布数据 -> long format，不再横着乱铺
+目标应变点 -> 达不到也保留 not_reached 行
+批处理汇总 -> 单独写 _Batch_Summary.xlsx
+```
+
+### `[Specimen]_Origin_Plot_Data.xlsx`
+
+给 Origin / Python / Excel 画图用。表尽量少，字段直接。
+
+```text
+00_READ_ME              # 每个 sheet 怎么用
+01_Frame_Curves         # 一行一帧：strain/stress/crack count/spacing/COD
+02_Target_States        # 目标应变点摘要；没达到也写 not_reached
+03_Distribution_Tidy    # 一行一个分布值：State + Metric + Value_um
+04_Crack_Tidy           # 一行一条裂缝：State/Frame/Crack_ID/Length/Width
+```
+
+最常用：
+
+```text
+画时序曲线 -> 01_Frame_Curves
+画箱线图/小提琴图 -> 03_Distribution_Tidy
+做裂缝级透视表 -> 04_Crack_Tidy
 ```
 
 ### `[Specimen]_Statistics_Report.xlsx`
 
-给论文表格和复核用。
+给论文表格、复核、查错用。别拿这个直接画图，除非你喜欢折磨自己。
 
 ```text
-01_Macro_Summary       # UTS、极限应变、饱和裂缝数量、宽度摘要
-02_Gradient_States     # 指定应变点统计
-03_Saturated_Cracks    # 饱和状态单裂缝明细
-04_Ultimate_Cracks     # 极限状态单裂缝明细
-05_QA_Metadata         # 尺度、时间轴、质量、COD 状态、同步状态
-06_Validation          # 人工标注对比，没标注就留空提示
+00_Specimen_Summary     # 单试件总摘要：UTS、极限应变、饱和裂缝、尺度、同步状态
+01_Frame_All            # 完整逐帧表，保留 QA/同步/COD 状态
+02_Target_Summary       # 目标应变点摘要
+03_Key_Crack_Details    # First_Crack / Saturated / Ultimate / Max_Width 裂缝明细
+04_Distribution_Tidy    # 分布长表备份
+05_QA_Frame_Status      # 一行一帧的 QA 状态
+06_QA_Metadata          # 元数据来源、尺度、时间轴、状态计数
+07_Validation           # 人工标注对比，没标注就提示
 ```
+
+### `_Batch_Summary.xlsx`
+
+批处理时自动更新。不是每个试件一个，而是整个输出目录一个。
+
+```text
+Specimen_Summary        # 每个试件一行
+Target_Summary          # 每个试件 × 每个目标应变点一行
+```
+
+拿它做组间对比。别再把十几个单试件 Excel 手动复制进一个总表。那种操作属于考古，不属于科研。
 
 ## QA 必看
 
-打开 `05_QA_Metadata`。别跳过。
+打开 `05_QA_Frame_Status` 和 `06_QA_Metadata`。别跳过。
 
 重点看：
 
@@ -303,7 +336,7 @@ Frame,crack_count,W_avg_um,W_max_um
 软件会写入：
 
 ```text
-06_Validation
+07_Validation
 ```
 
 没有人工标注也能跑。只是少一层保险。
@@ -394,10 +427,13 @@ pytest tests/test_core_contracts.py
 当前测试盯着几件要命的事：
 
 ```text
-缺 v map 时明确返回 missing_v_map_required
+缺 v map时明确返回 missing_v_map_required
 DIC strains/displacements 帧数不一致时直接报错
 .mat 有时间轴就用 metadata time
 .mat 没时间轴就用 sampling_interval_s
+Excel 导出必须去掉 object payload
+目标应变没达到也必须保留 not_reached 行
+裂缝分布必须是 tidy long format
 ```
 
 ## 目录
@@ -415,7 +451,7 @@ CrackVision-DIC
 │  │  └─ models.py
 │  └─ gui/
 │     ├─ main_window.py
-│     └─ worker.py
+│     └─ worker.py               # Excel 导出也在这里
 ├─ tests/
 │  └─ test_core_contracts.py
 └─ requirements.txt
@@ -423,4 +459,4 @@ CrackVision-DIC
 
 ## 一句话结论
 
-把 `.mat` 和 `.csv` 喂进去，检查 QA，再拿 Excel 去画图。别跳过 QA。跳过就等于在论文里玩俄罗斯轮盘。
+先看 `_Batch_Summary.xlsx`，再用 `01_Frame_Curves` 画时序，用 `03_Distribution_Tidy` 画分布。别再手动复制粘贴。那不是科研，是体力劳动 cosplay。
