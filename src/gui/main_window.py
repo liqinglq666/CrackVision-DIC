@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
     QTextBrowser,
     QComboBox,
     QScrollArea,
+    QTabWidget,
+    QFrame,
 )
 from PySide6.QtGui import QDesktopServices, QAction
 from PySide6.QtCore import Qt, QUrl
@@ -133,7 +135,7 @@ class UserManualDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("CrackVision-DIC 用户说明书与物理参数指南")
-        self.resize(820, 720)
+        self.resize(860, 720)
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -142,9 +144,9 @@ class UserManualDialog(QDialog):
         browser.setOpenExternalLinks(True)
         browser.setHtml(
             """
-        <h2 style='color: #2F3640;'>CrackVision-DIC 物理分析引擎说明书</h2>
+        <h2 style='color: #111827;'>CrackVision-DIC 物理分析引擎说明书</h2>
 
-        <h3 style='color: #e1b12c;'>一、核心物理参数</h3>
+        <h3 style='color: #2563EB;'>一、核心物理参数</h3>
         <ul>
             <li><b>DIC 帧间隔</b>: .mat 内没有真实时间轴时，系统用
                 <code>Frame × Sampling Interval</code> 构造 DIC 时间轴。填错，MTS 同步直接偏航。</li>
@@ -155,16 +157,17 @@ class UserManualDialog(QDialog):
             <li><b>弹性模量 E</b>: 用于 <code>W_global_est = max(0, strain - stress/E) × spacing</code> 的 sanity check。</li>
         </ul>
 
-        <h3 style='color: #44BD32;'>二、裂缝识别方法</h3>
+        <h3 style='color: #059669;'>二、裂缝识别方法</h3>
         <ul>
             <li><b>strain_or_image</b>: DIC 高 exx 区 + 相机图像 mask 取并集。默认，适合 ECC 细裂缝。</li>
             <li><b>strain_and_image</b>: 交集。更严格，但可能漏裂缝。</li>
             <li><b>image_near_strain</b>: 图像裂缝必须靠近 DIC 高应变支撑。</li>
             <li><b>image_only</b>: 只用图像找裂缝。能跑，但别拿它当主物理方法。</li>
+            <li><b>strain_only</b>: 只用 DIC 高应变区。适合不信任图像 mask 的时候。</li>
         </ul>
         <p>相机图像 mask 只辅助找裂缝位置。主宽度仍来自 DIC 法向位移跳量。照片黑线宽不是神谕。</p>
 
-        <h3 style='color: #e84118;'>三、经典翻车点</h3>
+        <h3 style='color: #DC2626;'>三、经典翻车点</h3>
         <ul>
             <li><b>MTS 同步失败：</b>检查 DIC 帧间隔、MTS 起始时间、触发延迟和 CSV 时间列单位。</li>
             <li><b>COD 全部为 0：</b>若配置要求 v 位移场，请确认 .mat 中有 v_map。缺 v 会给出
@@ -174,7 +177,7 @@ class UserManualDialog(QDialog):
             <li><b>裂缝数量暴涨：</b>调高 MAD k、min_crack_area_points、COD 底噪，或把融合模式改成 image_near_strain。</li>
         </ul>
         <hr>
-        <p style='color: #718093; font-size: 12px;'>Compute first, audit second, publish last.</p>
+        <p style='color: #6B7280; font-size: 12px;'>Compute first, audit second, publish last.</p>
         """
         )
         layout.addWidget(browser)
@@ -189,7 +192,7 @@ class DataPairingDialog(QDialog):
     def __init__(self, dic_dir: str, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("批处理: 智能数据对齐控制台")
-        self.resize(860, 520)
+        self.resize(900, 560)
         self.dic_dir = Path(dic_dir)
         self.paired_data: Dict[str, str] = {}
         self.mts_count = 0
@@ -198,26 +201,36 @@ class DataPairingDialog(QDialog):
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
 
-        grp_auto = QGroupBox("智能配对区 (可选)")
+        title = QLabel("批处理挂载台")
+        title.setStyleSheet("font-size: 20px; font-weight: 800; color: #111827;")
+        layout.addWidget(title)
+
+        subtitle = QLabel("严格配对 DIC .mat 与 MTS .csv。匹配不到就手动指定，别让 E1 偷偷配到 E10。")
+        subtitle.setStyleSheet("color: #6B7280;")
+        layout.addWidget(subtitle)
+
+        grp_auto = QGroupBox("MTS 目录与自动配对")
         layout_auto = QHBoxLayout(grp_auto)
 
         self.edit_mts_dir = QLineEdit()
-        self.edit_mts_dir.setPlaceholderText("选择包含 MTS .csv 文件的目录；严格匹配，避免 E1 误配 E10...")
+        self.edit_mts_dir.setPlaceholderText("选择包含 MTS .csv 文件的目录...")
         btn_browse_mts = QPushButton("选择 MTS 目录")
         btn_browse_mts.clicked.connect(self._select_mts_dir)
 
         btn_auto_match = QPushButton("一键严格配对")
-        btn_auto_match.setStyleSheet("background-color: #2F3640; color: #FFFFFF; font-weight: bold;")
+        btn_auto_match.setObjectName("PrimaryButton")
         btn_auto_match.clicked.connect(self._auto_match)
 
-        layout_auto.addWidget(self.edit_mts_dir)
+        layout_auto.addWidget(self.edit_mts_dir, 1)
         layout_auto.addWidget(btn_browse_mts)
         layout_auto.addWidget(btn_auto_match)
         layout.addWidget(grp_auto)
 
         layout_tools = QHBoxLayout()
-        layout_tools.addWidget(QLabel("勾选需要进入计算队列的试件：", styleSheet="font-weight: bold;"))
+        layout_tools.addWidget(QLabel("勾选需要进入计算队列的试件：", styleSheet="font-weight: 700;"))
         layout_tools.addStretch()
         btn_select_all = QPushButton("全部勾选")
         btn_select_all.clicked.connect(lambda: self._toggle_all(Qt.CheckState.Checked))
@@ -228,16 +241,75 @@ class DataPairingDialog(QDialog):
         layout.addLayout(layout_tools)
 
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["DIC 数据矩阵 (勾选以计算)", "MTS 时域曲线 (为空即退回纯DIC)", "操作"])
+        self.table.setHorizontalHeaderLabels(["DIC 数据矩阵", "MTS 时域曲线", "操作"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
         layout.addWidget(self.table)
 
         btn_confirm = QPushButton("确认勾选并锁定队列")
-        btn_confirm.setMinimumHeight(40)
+        btn_confirm.setObjectName("PrimaryButton")
+        btn_confirm.setMinimumHeight(42)
         btn_confirm.clicked.connect(self._on_confirm)
         layout.addWidget(btn_confirm)
+
+        self.setStyleSheet(
+            """
+            QDialog { background: #F8FAFC; }
+            QGroupBox {
+                background: #FFFFFF;
+                border: 1px solid #E5E7EB;
+                border-radius: 14px;
+                margin-top: 14px;
+                padding: 14px;
+                font-weight: 800;
+                color: #111827;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 14px;
+                padding: 0 8px;
+                background: #F8FAFC;
+            }
+            QLineEdit {
+                min-height: 34px;
+                border: 1px solid #D1D5DB;
+                border-radius: 9px;
+                padding: 0 10px;
+                background: #FFFFFF;
+            }
+            QPushButton {
+                min-height: 34px;
+                border: 1px solid #D1D5DB;
+                border-radius: 9px;
+                padding: 0 14px;
+                background: #FFFFFF;
+                color: #111827;
+                font-weight: 650;
+            }
+            QPushButton:hover { background: #F3F4F6; }
+            QPushButton#PrimaryButton {
+                background: #2563EB;
+                color: white;
+                border: none;
+            }
+            QPushButton#PrimaryButton:hover { background: #1D4ED8; }
+            QTableWidget {
+                background: #FFFFFF;
+                border: 1px solid #E5E7EB;
+                border-radius: 12px;
+                alternate-background-color: #F9FAFB;
+            }
+            QHeaderView::section {
+                background: #F3F4F6;
+                color: #374151;
+                border: none;
+                padding: 8px;
+                font-weight: 800;
+            }
+            """
+        )
 
     def _toggle_all(self, state: Qt.CheckState) -> None:
         for row in range(self.table.rowCount()):
@@ -355,7 +427,7 @@ class DataPairingDialog(QDialog):
             self.table.setItem(row, 0, item_mat)
             self.table.setItem(row, 1, QTableWidgetItem(""))
 
-            btn_browse = QPushButton("手动指定...")
+            btn_browse = QPushButton("手动指定")
             btn_browse.clicked.connect(lambda checked=False, r=row: self._browse_csv(r))
             self.table.setCellWidget(row, 2, btn_browse)
 
@@ -382,7 +454,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("CrackVision-DIC Core Engine")
-        self.resize(780, 980)
+        self.resize(1180, 860)
 
         self.worker: Optional[AnalysisPipelineWorker] = None
         self.paired_dict: Dict[str, str] = {}
@@ -391,26 +463,181 @@ class MainWindow(QMainWindow):
         self.config: dict = {}
 
         self._load_config()
-        self._apply_minimalist_style()
+        self._apply_modern_style()
         self._init_ui()
         self._init_menu_bar()
 
-    def _apply_minimalist_style(self) -> None:
+    def _apply_modern_style(self) -> None:
         self.setStyleSheet(
             """
-            QMainWindow { background-color: #F5F6FA; }
-            QGroupBox { font-weight: bold; border: 1px solid #DCDDE1; border-radius: 4px; margin-top: 2ex; padding-top: 10px; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; color: #2F3640; }
-            QPushButton { background-color: #ECDFE6; border: 1px solid #DCDDE1; padding: 6px; border-radius: 3px; color: #2F3640; }
-            QPushButton:hover { background-color: #DCDDE1; }
-            QPushButton#BtnStart { background-color: #2F3640; color: #F5F6FA; font-weight: bold; font-size: 11pt; border: none; }
-            QPushButton#BtnStart:hover { background-color: #353B48; }
-            QPushButton#BtnStart:disabled { background-color: #718093; }
-            QLineEdit, QDoubleSpinBox, QComboBox { border: 1px solid #DCDDE1; padding: 5px; border-radius: 3px; background-color: #FFFFFF; }
-            QTextEdit { border: 1px solid #DCDDE1; background-color: #2F3640; color: #F5F6FA; font-family: Consolas, monospace; font-size: 9pt; }
-            QProgressBar { border: 1px solid #DCDDE1; border-radius: 3px; text-align: center; background-color: #FFFFFF; }
-            QProgressBar::chunk { background-color: #44BD32; }
-        """
+            QMainWindow {
+                background: #EEF2F7;
+                color: #111827;
+                font-family: "Microsoft YaHei UI", "Segoe UI", Arial;
+                font-size: 13px;
+            }
+            QMenuBar {
+                background: #EEF2F7;
+                color: #374151;
+                padding: 4px 8px;
+            }
+            QMenuBar::item:selected { background: #E5E7EB; border-radius: 6px; }
+            QFrame#Hero {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0F172A, stop:0.55 #1E3A8A, stop:1 #2563EB);
+                border-radius: 18px;
+            }
+            QLabel#HeroTitle {
+                color: #FFFFFF;
+                font-size: 26px;
+                font-weight: 900;
+            }
+            QLabel#HeroSubTitle {
+                color: #DBEAFE;
+                font-size: 13px;
+            }
+            QLabel#Chip {
+                color: #DBEAFE;
+                background: rgba(255,255,255,0.14);
+                border: 1px solid rgba(255,255,255,0.22);
+                border-radius: 11px;
+                padding: 4px 10px;
+                font-weight: 700;
+            }
+            QGroupBox, QFrame#Card {
+                background: #FFFFFF;
+                border: 1px solid #E5E7EB;
+                border-radius: 16px;
+                margin-top: 16px;
+                padding: 16px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 16px;
+                padding: 0 8px;
+                background: #EEF2F7;
+                color: #111827;
+                font-weight: 900;
+                font-size: 14px;
+            }
+            QLabel#SectionTitle {
+                font-size: 15px;
+                font-weight: 900;
+                color: #111827;
+                padding-top: 6px;
+                padding-bottom: 2px;
+            }
+            QLabel#Hint {
+                color: #6B7280;
+                font-size: 12px;
+            }
+            QLineEdit, QDoubleSpinBox, QComboBox {
+                min-height: 34px;
+                border: 1px solid #D1D5DB;
+                border-radius: 10px;
+                padding: 0 10px;
+                background: #FFFFFF;
+                selection-background-color: #2563EB;
+            }
+            QLineEdit:focus, QDoubleSpinBox:focus, QComboBox:focus {
+                border: 1px solid #2563EB;
+                background: #F8FAFC;
+            }
+            QLineEdit:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {
+                background: #F3F4F6;
+                color: #9CA3AF;
+            }
+            QCheckBox {
+                spacing: 8px;
+                color: #374151;
+                font-weight: 600;
+            }
+            QRadioButton {
+                spacing: 8px;
+                color: #111827;
+                font-weight: 800;
+            }
+            QPushButton {
+                min-height: 34px;
+                border: 1px solid #D1D5DB;
+                border-radius: 10px;
+                padding: 0 14px;
+                background: #FFFFFF;
+                color: #111827;
+                font-weight: 700;
+            }
+            QPushButton:hover { background: #F3F4F6; border-color: #9CA3AF; }
+            QPushButton:pressed { background: #E5E7EB; }
+            QPushButton#PrimaryButton {
+                min-height: 44px;
+                background: #2563EB;
+                color: white;
+                border: none;
+                font-size: 15px;
+                font-weight: 900;
+            }
+            QPushButton#PrimaryButton:hover { background: #1D4ED8; }
+            QPushButton#PrimaryButton:disabled { background: #94A3B8; }
+            QPushButton#GhostButton {
+                background: rgba(255,255,255,0.16);
+                color: white;
+                border: 1px solid rgba(255,255,255,0.25);
+            }
+            QTabWidget::pane {
+                border: 1px solid #E5E7EB;
+                border-radius: 16px;
+                background: #FFFFFF;
+                top: -1px;
+            }
+            QTabBar::tab {
+                background: #E5E7EB;
+                color: #374151;
+                border-top-left-radius: 11px;
+                border-top-right-radius: 11px;
+                padding: 10px 18px;
+                margin-right: 4px;
+                font-weight: 800;
+            }
+            QTabBar::tab:selected {
+                background: #FFFFFF;
+                color: #2563EB;
+            }
+            QTextEdit {
+                border: 1px solid #111827;
+                background: #0B1020;
+                color: #D1FAE5;
+                border-radius: 14px;
+                padding: 10px;
+                font-family: Consolas, "Cascadia Mono", monospace;
+                font-size: 12px;
+            }
+            QProgressBar {
+                min-height: 12px;
+                border: none;
+                border-radius: 6px;
+                background: #DDE5F0;
+                text-align: center;
+                color: transparent;
+            }
+            QProgressBar::chunk {
+                background: #2563EB;
+                border-radius: 6px;
+            }
+            QScrollArea {
+                border: none;
+                background: transparent;
+            }
+            QScrollBar:vertical {
+                width: 10px;
+                background: transparent;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical {
+                background: #CBD5E1;
+                border-radius: 5px;
+                min-height: 36px;
+            }
+            QScrollBar::handle:vertical:hover { background: #94A3B8; }
+            """
         )
 
     def _load_config(self) -> None:
@@ -442,45 +669,71 @@ class MainWindow(QMainWindow):
     def _init_ui(self) -> None:
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
+
         root_layout = QVBoxLayout(central_widget)
-        root_layout.setContentsMargins(12, 12, 12, 12)
+        root_layout.setContentsMargins(18, 14, 18, 18)
+        root_layout.setSpacing(12)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        main_layout = QVBoxLayout(content)
-        main_layout.setContentsMargins(16, 16, 16, 16)
-        main_layout.setSpacing(12)
+        root_layout.addWidget(self._build_hero())
 
-        self._init_data_group(main_layout)
-        self._init_param_group(main_layout)
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(14)
 
-        self.btn_start = QPushButton("启动物理分析引擎")
-        self.btn_start.setObjectName("BtnStart")
-        self.btn_start.setMinimumHeight(45)
-        self.btn_start.clicked.connect(self._start_pipeline)
-        main_layout.addWidget(self.btn_start)
+        left_panel = QVBoxLayout()
+        left_panel.setSpacing(12)
+        self._init_data_group(left_panel)
+        self._init_run_group(left_panel)
+        content_layout.addLayout(left_panel, 42)
 
-        self.progress = QProgressBar()
-        self.progress.setMinimumHeight(15)
-        main_layout.addWidget(self.progress)
+        right_panel = QVBoxLayout()
+        right_panel.setSpacing(12)
+        self._init_param_group(right_panel)
+        self._init_log_group(right_panel)
+        content_layout.addLayout(right_panel, 58)
 
-        main_layout.addWidget(QLabel("引擎运行日志 (Engine Logs):", styleSheet="font-weight: bold; color: #2F3640;"))
-        self.logger_console = QTextEdit()
-        self.logger_console.setReadOnly(True)
-        self.logger_console.setMinimumHeight(180)
-        main_layout.addWidget(self.logger_console)
+        root_layout.addLayout(content_layout, 1)
 
-        scroll.setWidget(content)
-        root_layout.addWidget(scroll)
+    def _build_hero(self) -> QFrame:
+        hero = QFrame()
+        hero.setObjectName("Hero")
+        hero.setMinimumHeight(118)
+        layout = QHBoxLayout(hero)
+        layout.setContentsMargins(24, 18, 24, 18)
+        layout.setSpacing(18)
+
+        text_box = QVBoxLayout()
+        title = QLabel("CrackVision-DIC")
+        title.setObjectName("HeroTitle")
+        subtitle = QLabel("DIC displacement jump · ECC crack width · MTS synchronized evolution")
+        subtitle.setObjectName("HeroSubTitle")
+        text_box.addWidget(title)
+        text_box.addWidget(subtitle)
+
+        chip_row = QHBoxLayout()
+        for text in ["Normal COD", "Image-assisted Mask", "QA-first Excel"]:
+            chip = QLabel(text)
+            chip.setObjectName("Chip")
+            chip_row.addWidget(chip)
+        chip_row.addStretch()
+        text_box.addLayout(chip_row)
+
+        layout.addLayout(text_box, 1)
+
+        btn_manual = QPushButton("F1 说明书")
+        btn_manual.setObjectName("GhostButton")
+        btn_manual.clicked.connect(self._show_manual)
+        layout.addWidget(btn_manual)
+
+        return hero
 
     def _init_data_group(self, layout: QVBoxLayout) -> None:
-        grp = QGroupBox("I/O 挂载配置")
-        main_vbox = QVBoxLayout()
+        grp = QGroupBox("I/O 挂载")
+        main_vbox = QVBoxLayout(grp)
+        main_vbox.setSpacing(12)
 
         mode_layout = QHBoxLayout()
-        self.radio_single = QRadioButton("单点计算 (Single)")
-        self.radio_batch = QRadioButton("批处理队列 (Batch)")
+        self.radio_single = QRadioButton("单点计算")
+        self.radio_batch = QRadioButton("批处理队列")
         self.radio_single.setChecked(True)
 
         self.mode_group = QButtonGroup()
@@ -488,101 +741,146 @@ class MainWindow(QMainWindow):
         self.mode_group.addButton(self.radio_batch)
         mode_layout.addWidget(self.radio_single)
         mode_layout.addWidget(self.radio_batch)
+        mode_layout.addStretch()
         main_vbox.addLayout(mode_layout)
 
         self.stack_data = QStackedWidget()
 
         page_single = QWidget()
         form_single = QFormLayout(page_single)
-        form_single.setContentsMargins(0, 5, 0, 0)
+        self._tune_form(form_single)
+
         self.edit_s_mat = QLineEdit()
+        self.edit_s_mat.setPlaceholderText("选择 Ncorr / DIC 导出的 .mat")
         btn_s_mat = QPushButton("浏览")
         btn_s_mat.clicked.connect(lambda: self._select_file(self.edit_s_mat, "MAT Files (*.mat *.MAT)"))
-        h_s_mat = QHBoxLayout()
-        h_s_mat.addWidget(self.edit_s_mat)
-        h_s_mat.addWidget(btn_s_mat)
-        form_single.addRow("DIC 矩阵文件:", h_s_mat)
+        form_single.addRow("DIC 矩阵", self._path_row(self.edit_s_mat, btn_s_mat))
 
         self.edit_s_mts = QLineEdit()
-        self.edit_s_mts.setPlaceholderText("无力学数据可留空")
+        self.edit_s_mts.setPlaceholderText("可留空；有 MTS 时会尝试同步")
         btn_s_mts = QPushButton("浏览")
         btn_s_mts.clicked.connect(lambda: self._select_file(self.edit_s_mts, "CSV Files (*.csv *.CSV)"))
-        h_s_mts = QHBoxLayout()
-        h_s_mts.addWidget(self.edit_s_mts)
-        h_s_mts.addWidget(btn_s_mts)
-        form_single.addRow("MTS 时域文件:", h_s_mts)
+        form_single.addRow("MTS 曲线", self._path_row(self.edit_s_mts, btn_s_mts))
         self.stack_data.addWidget(page_single)
 
         page_batch = QWidget()
         form_batch = QFormLayout(page_batch)
-        form_batch.setContentsMargins(0, 5, 0, 0)
+        self._tune_form(form_batch)
+
         self.edit_dic_dir = QLineEdit()
+        self.edit_dic_dir.setPlaceholderText("包含多个 .mat 的工作目录")
         btn_dic_dir = QPushButton("浏览")
         btn_dic_dir.clicked.connect(lambda: self._select_dir(self.edit_dic_dir))
-        h_dic_dir = QHBoxLayout()
-        h_dic_dir.addWidget(self.edit_dic_dir)
-        h_dic_dir.addWidget(btn_dic_dir)
-        form_batch.addRow("DIC 工作目录:", h_dic_dir)
+        form_batch.addRow("DIC 工作目录", self._path_row(self.edit_dic_dir, btn_dic_dir))
 
         self.btn_pair = QPushButton("打开智能挂载台")
         self.btn_pair.clicked.connect(self._open_pairing_dialog)
-        self.lbl_pair_status = QLabel("状态: 未挂载")
+        self.lbl_pair_status = QLabel("未挂载")
+        self.lbl_pair_status.setObjectName("Hint")
         h_pair = QHBoxLayout()
         h_pair.addWidget(self.btn_pair)
-        h_pair.addWidget(self.lbl_pair_status)
-        form_batch.addRow("批处理队列:", h_pair)
+        h_pair.addWidget(self.lbl_pair_status, 1)
+        form_batch.addRow("批处理队列", h_pair)
         self.stack_data.addWidget(page_batch)
 
         main_vbox.addWidget(self.stack_data)
         self.radio_single.toggled.connect(lambda: self.stack_data.setCurrentIndex(0))
         self.radio_batch.toggled.connect(lambda: self.stack_data.setCurrentIndex(1))
 
-        form_out = QFormLayout()
-        form_out.setContentsMargins(0, 10, 0, 0)
         self.edit_out = QLineEdit()
+        self.edit_out.setPlaceholderText("输出 Excel 的落地目录")
         btn_out = QPushButton("浏览")
         btn_out.clicked.connect(lambda: self._select_dir(self.edit_out))
-        h_out = QHBoxLayout()
-        h_out.addWidget(self.edit_out)
-        h_out.addWidget(btn_out)
-        form_out.addRow("输出落地目录:", h_out)
-
+        form_out = QFormLayout()
+        self._tune_form(form_out)
+        form_out.addRow("输出目录", self._path_row(self.edit_out, btn_out))
         main_vbox.addLayout(form_out)
-        grp.setLayout(main_vbox)
+
         layout.addWidget(grp)
 
+    def _init_run_group(self, layout: QVBoxLayout) -> None:
+        grp = QGroupBox("运行控制")
+        vbox = QVBoxLayout(grp)
+        vbox.setSpacing(10)
+
+        self.btn_start = QPushButton("启动物理分析引擎")
+        self.btn_start.setObjectName("PrimaryButton")
+        self.btn_start.clicked.connect(self._start_pipeline)
+        vbox.addWidget(self.btn_start)
+
+        self.progress = QProgressBar()
+        vbox.addWidget(self.progress)
+
+        hint = QLabel("建议顺序：先小样本试跑 → 看 QA → 再批量。别让错误批量繁殖。")
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        vbox.addWidget(hint)
+
+        layout.addWidget(grp)
+        layout.addStretch()
+
     def _init_param_group(self, layout: QVBoxLayout) -> None:
-        grp = QGroupBox("物理算子、裂缝识别与宽度方法")
-        form = QFormLayout()
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_basic_tab(), "基础标定")
+        self.tabs.addTab(self._build_cod_tab(), "COD / 宽度")
+        self.tabs.addTab(self._build_fusion_tab(), "融合与图像")
+        layout.addWidget(self.tabs, 1)
 
+    def _init_log_group(self, layout: QVBoxLayout) -> None:
+        grp = QGroupBox("Engine Logs")
+        vbox = QVBoxLayout(grp)
+        self.logger_console = QTextEdit()
+        self.logger_console.setReadOnly(True)
+        self.logger_console.setMinimumHeight(190)
+        vbox.addWidget(self.logger_console)
+        layout.addWidget(grp)
+
+    def _build_basic_tab(self) -> QWidget:
         experiment = self.config.get("experiment", {})
-        physics = self.config.get("physics", {})
-        sampling = physics.get("cod_sampling", {}) or {}
-        crack_detection = self.config.get("crack_detection", {}) or {}
-        image_cfg = self.config.get("image_crack_detection", {}) or {}
+        page = self._scroll_page()
+        form = page.findChild(QFormLayout)
+        assert form is not None
 
-        form.addRow(self._section_label("基础标定"))
+        form.addRow(self._section_label("试件几何与时间轴"))
 
         self.spin_gauge_len = QDoubleSpinBox()
         self.spin_gauge_len.setRange(1.0, 1000.0)
         self.spin_gauge_len.setDecimals(1)
         self.spin_gauge_len.setSingleStep(5.0)
         self.spin_gauge_len.setValue(float(experiment.get("gauge_length_mm", 80.0)))
-        form.addRow("宏观拉伸标距 (mm):", self.spin_gauge_len)
+        form.addRow("宏观拉伸标距 / mm", self.spin_gauge_len)
 
         self.spin_scale = QDoubleSpinBox()
         self.spin_scale.setRange(1e-5, 10.0)
         self.spin_scale.setDecimals(5)
         self.spin_scale.setSingleStep(0.0001)
         self.spin_scale.setValue(float(experiment.get("mm_per_pixel", 0.045)))
-        form.addRow("兜底比例尺 (mm/px):", self.spin_scale)
+        form.addRow("兜底比例尺 / mm·px⁻¹", self.spin_scale)
 
         self.spin_interval = QDoubleSpinBox()
         self.spin_interval.setRange(1e-6, 3600.0)
         self.spin_interval.setDecimals(4)
         self.spin_interval.setSingleStep(0.1)
         self.spin_interval.setValue(float(experiment.get("sampling_interval_s", 5.0)))
-        form.addRow("DIC 帧间隔兜底 (s/frame):", self.spin_interval)
+        form.addRow("DIC 帧间隔兜底 / s·frame⁻¹", self.spin_interval)
+
+        form.addRow(self._hint_label("如果 .mat 内没有真实时间戳，就用 Frame_ID × 这个值。填错，MTS 同步会偏。"))
+
+        form.addRow(self._section_label("输出切片"))
+
+        target_strains = self.config.get("export", {}).get("target_strains", [0.2, 2.0, 4.0, 6.0])
+        self.edit_target_strains = QLineEdit(", ".join(str(v) for v in target_strains))
+        self.edit_target_strains.setPlaceholderText("例：0.2, 2.0, 4.0, 6.0")
+        form.addRow("目标应变点 / %", self.edit_target_strains)
+
+        return page
+
+    def _build_cod_tab(self) -> QWidget:
+        physics = self.config.get("physics", {})
+        sampling = physics.get("cod_sampling", {}) or {}
+        page = self._scroll_page()
+        form = page.findChild(QFormLayout)
+        assert form is not None
 
         form.addRow(self._section_label("DIC 裂缝与 COD"))
 
@@ -591,107 +889,152 @@ class MainWindow(QMainWindow):
         self.spin_cod_min.setDecimals(4)
         self.spin_cod_min.setSingleStep(0.001)
         self.spin_cod_min.setValue(float(physics.get("cod_min_mm", 0.002)))
-        form.addRow("COD 底噪拦截 (mm):", self.spin_cod_min)
+        form.addRow("COD 底噪拦截 / mm", self.spin_cod_min)
 
         self.spin_k = QDoubleSpinBox()
         self.spin_k.setRange(0.1, 20.0)
         self.spin_k.setDecimals(2)
         self.spin_k.setSingleStep(0.1)
         self.spin_k.setValue(float(physics.get("strain_threshold_k", 1.5)))
-        form.addRow("MAD 稳健阈值 (k):", self.spin_k)
+        form.addRow("MAD 稳健阈值 k", self.spin_k)
 
         self.chk_require_v = QCheckBox("要求 v 位移场；斜裂缝 COD 更靠谱")
         self.chk_require_v.setChecked(bool(physics.get("require_v_map_for_cod", True)))
-        form.addRow("COD 向量模式:", self.chk_require_v)
+        form.addRow("COD 向量模式", self.chk_require_v)
+
+        form.addRow(self._section_label("采样距离"))
 
         self.spin_delta_mm = QDoubleSpinBox()
         self.spin_delta_mm.setRange(0.0, 50.0)
         self.spin_delta_mm.setDecimals(3)
         self.spin_delta_mm.setSingleStep(0.01)
         self.spin_delta_mm.setValue(self._optional_float(sampling.get("delta_mm")))
-        form.addRow("COD 起采距离 delta_mm (0=按points):", self.spin_delta_mm)
+        form.addRow("起采距离 delta_mm", self.spin_delta_mm)
 
         self.spin_max_search_mm = QDoubleSpinBox()
         self.spin_max_search_mm.setRange(0.0, 100.0)
         self.spin_max_search_mm.setDecimals(3)
         self.spin_max_search_mm.setSingleStep(0.01)
         self.spin_max_search_mm.setValue(self._optional_float(sampling.get("max_search_mm")))
-        form.addRow("COD 搜索窗口 max_search_mm (0=按points):", self.spin_max_search_mm)
+        form.addRow("搜索窗口 max_search_mm", self.spin_max_search_mm)
+
+        form.addRow(self._hint_label("填 0 就按 points 参数；正式数据建议用 mm。毫米不背叛你，points 会。"))
+
+        form.addRow(self._section_label("全局 sanity check"))
 
         self.spin_elastic_modulus = QDoubleSpinBox()
         self.spin_elastic_modulus.setRange(0.0, 200000.0)
         self.spin_elastic_modulus.setDecimals(1)
         self.spin_elastic_modulus.setSingleStep(500.0)
         self.spin_elastic_modulus.setValue(self._optional_float(physics.get("elastic_modulus_mpa")))
-        form.addRow("弹性模量 E (MPa, 0=不用扣除 σ/E):", self.spin_elastic_modulus)
+        form.addRow("弹性模量 E / MPa", self.spin_elastic_modulus)
 
         self.chk_monotonic = QCheckBox("强制全局 DIC 应变单调不下降")
         self.chk_monotonic.setChecked(bool(physics.get("enforce_monotonic_strain", True)))
-        form.addRow("应变后处理:", self.chk_monotonic)
+        form.addRow("应变后处理", self.chk_monotonic)
+
+        return page
+
+    def _build_fusion_tab(self) -> QWidget:
+        crack_detection = self.config.get("crack_detection", {}) or {}
+        image_cfg = self.config.get("image_crack_detection", {}) or {}
+        page = self._scroll_page()
+        form = page.findChild(QFormLayout)
+        assert form is not None
 
         form.addRow(self._section_label("裂缝识别融合"))
 
         self.combo_fusion = QComboBox()
         self.combo_fusion.addItems(["strain_or_image", "strain_and_image", "image_near_strain", "image_only", "strain_only"])
         self._set_combo_current(self.combo_fusion, str(crack_detection.get("fusion_mode", "strain_or_image")))
-        form.addRow("融合模式:", self.combo_fusion)
+        form.addRow("融合模式", self.combo_fusion)
 
         self.spin_image_dilate = QDoubleSpinBox()
         self.spin_image_dilate.setRange(0, 20)
         self.spin_image_dilate.setDecimals(0)
         self.spin_image_dilate.setSingleStep(1)
         self.spin_image_dilate.setValue(float(crack_detection.get("image_dilation_radius_points", 1)))
-        form.addRow("图像 mask 膨胀半径 (DIC points):", self.spin_image_dilate)
+        form.addRow("图像 mask 膨胀半径 / DIC points", self.spin_image_dilate)
 
         self.chk_strain_support = QCheckBox("图像裂缝必须靠近 DIC 高应变支撑")
         self.chk_strain_support.setChecked(bool(crack_detection.get("require_strain_support", False)))
-        form.addRow("保守过滤:", self.chk_strain_support)
+        form.addRow("保守过滤", self.chk_strain_support)
+
+        form.addRow(self._hint_label("默认 strain_or_image 更敏感；如果误检多，试 image_near_strain。"))
 
         form.addRow(self._section_label("相机图像辅助"))
 
         self.chk_image_enabled = QCheckBox("启用相机图像 crack mask")
         self.chk_image_enabled.setChecked(bool(image_cfg.get("enabled", False)))
         self.chk_image_enabled.toggled.connect(self._toggle_image_controls)
-        form.addRow("图像辅助:", self.chk_image_enabled)
+        form.addRow("图像辅助", self.chk_image_enabled)
 
         self.edit_image_dir = QLineEdit(str(image_cfg.get("image_dir") or ""))
-        self.edit_image_dir.setPlaceholderText("留空自动找 images/imgs/frames/camera/crack_images；相对路径基于 .mat 所在目录")
+        self.edit_image_dir.setPlaceholderText("留空自动找 images / imgs / frames / camera / crack_images")
         btn_img_dir = QPushButton("浏览")
         btn_img_dir.clicked.connect(lambda: self._select_dir(self.edit_image_dir))
-        h_img = QHBoxLayout()
-        h_img.addWidget(self.edit_image_dir)
-        h_img.addWidget(btn_img_dir)
-        form.addRow("图片目录:", h_img)
+        form.addRow("图片目录", self._path_row(self.edit_image_dir, btn_img_dir))
         self.btn_image_dir = btn_img_dir
 
         self.edit_image_pattern = QLineEdit(str(image_cfg.get("filename_pattern") or ""))
         self.edit_image_pattern.setPlaceholderText("可空。例：frame_{frame:04d}.png")
-        form.addRow("图片命名模板:", self.edit_image_pattern)
+        form.addRow("图片命名模板", self.edit_image_pattern)
 
         self.spin_frame_offset = QDoubleSpinBox()
         self.spin_frame_offset.setRange(-100000, 100000)
         self.spin_frame_offset.setDecimals(0)
         self.spin_frame_offset.setSingleStep(1)
         self.spin_frame_offset.setValue(float(image_cfg.get("frame_index_offset", 0)))
-        form.addRow("图像帧偏移:", self.spin_frame_offset)
+        form.addRow("图像帧偏移", self.spin_frame_offset)
 
-        self.chk_dark_cracks = QCheckBox("暗裂缝/黑线模式")
+        self.chk_dark_cracks = QCheckBox("暗裂缝 / 黑线模式")
         self.chk_dark_cracks.setChecked(bool(image_cfg.get("dark_cracks", True)))
-        form.addRow("图像阈值方向:", self.chk_dark_cracks)
+        form.addRow("图像阈值方向", self.chk_dark_cracks)
 
-        form.addRow(self._section_label("输出切片"))
-        target_strains = self.config.get("export", {}).get("target_strains", [0.2, 2.0, 4.0, 6.0])
-        self.edit_target_strains = QLineEdit(", ".join(str(v) for v in target_strains))
-        form.addRow("多梯度切片目标 (%):", self.edit_target_strains)
-
-        grp.setLayout(form)
-        layout.addWidget(grp)
         self._toggle_image_controls(self.chk_image_enabled.isChecked())
+        return page
+
+    def _scroll_page(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumHeight(390)
+
+        body = QWidget()
+        form = QFormLayout(body)
+        self._tune_form(form)
+        form.setContentsMargins(18, 18, 18, 18)
+
+        scroll.setWidget(body)
+        return scroll
+
+    @staticmethod
+    def _tune_form(form: QFormLayout) -> None:
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(12)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+
+    @staticmethod
+    def _path_row(line_edit: QLineEdit, button: QPushButton) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addWidget(line_edit, 1)
+        row.addWidget(button)
+        return row
 
     @staticmethod
     def _section_label(text: str) -> QLabel:
         label = QLabel(text)
-        label.setStyleSheet("font-weight: bold; color: #2F3640; padding-top: 8px;")
+        label.setObjectName("SectionTitle")
+        return label
+
+    @staticmethod
+    def _hint_label(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("Hint")
+        label.setWordWrap(True)
         return label
 
     @staticmethod
@@ -719,8 +1062,6 @@ class MainWindow(QMainWindow):
             getattr(self, "edit_image_pattern", None),
             getattr(self, "spin_frame_offset", None),
             getattr(self, "chk_dark_cracks", None),
-            getattr(self, "spin_image_dilate", None),
-            getattr(self, "chk_strain_support", None),
         ]:
             if widget is not None:
                 widget.setEnabled(enabled)
@@ -747,7 +1088,7 @@ class MainWindow(QMainWindow):
         dialog = DataPairingDialog(dic_dir, self)
         if dialog.exec():
             self.paired_dict = dialog.paired_data
-            self.lbl_pair_status.setText(f"已勾选: {len(self.paired_dict)} 组 (其中含 MTS: {dialog.mts_count} 组)")
+            self.lbl_pair_status.setText(f"已勾选: {len(self.paired_dict)} 组 / 含 MTS: {dialog.mts_count} 组")
 
     def _update_progress(self, current: int, total: int) -> None:
         if total > 0:
@@ -841,13 +1182,13 @@ class MainWindow(QMainWindow):
 
         Path(out_dir_str).mkdir(parents=True, exist_ok=True)
         self.btn_start.setEnabled(False)
-        self.btn_start.setText("引擎全速运转中...")
+        self.btn_start.setText("引擎运转中...")
         self.progress.setValue(0)
         self.logger_console.clear()
 
         self.logger_console.append(f"[Pre-flight] 队列: {len(process_dict)} 组")
         self.logger_console.append(
-            f"[Core] 标距={gauge_len:.1f} mm | 帧间隔={sampling_interval:.4f} s | COD底噪={cod_min:.4f} mm | require_v={self.chk_require_v.isChecked()}"
+            f"[Core] gauge={gauge_len:.1f} mm | dt={sampling_interval:.4f} s | COD_floor={cod_min:.4f} mm | require_v={self.chk_require_v.isChecked()}"
         )
         self.logger_console.append(
             f"[Crack] fusion={self.combo_fusion.currentText()} | image_mask={self.chk_image_enabled.isChecked()} | E={physics.get('elastic_modulus_mpa') or 'none'} MPa"
@@ -856,7 +1197,7 @@ class MainWindow(QMainWindow):
             self.logger_console.append(
                 f"[Image] dir={self.edit_image_dir.text().strip() or 'auto-discover'} | pattern={self.edit_image_pattern.text().strip() or 'sorted/auto'}"
             )
-        self.logger_console.append("-" * 50)
+        self.logger_console.append("-" * 60)
 
         self.worker = AnalysisPipelineWorker(process_dict, Path(out_dir_str), self.config)
         self.worker.error_occurred.connect(lambda err: self.logger_console.append(f"\n[FATAL] {err}"))
