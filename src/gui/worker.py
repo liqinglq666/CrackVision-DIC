@@ -1,3 +1,4 @@
+import logging
 import multiprocessing
 import shutil
 import tempfile
@@ -13,8 +14,6 @@ from PySide6.QtCore import QThread, Signal
 from src.core.evolution_analyzer import EvolutionAnalyzer
 from src.core.io_sync import PipelineIO
 from src.core.physics import CrackPhysicsEngine
-
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +34,7 @@ class FrameTaskPayload:
     metadata_source: str
     frame_id: int
     time_s: float
+    time_source: str
 
 
 def _median_band(arr: np.ndarray, valid: np.ndarray, x_center: int, half_width: int) -> float:
@@ -124,6 +124,7 @@ def analyze_single_frame_task(payload: FrameTaskPayload) -> Optional[Dict[str, A
             {
                 "Frame": int(payload.frame_id),
                 "Time_s": float(payload.time_s),
+                "dic_time_source": payload.time_source,
                 "global_strain": max(0.0, float(strain)),
                 "virtual_gauge_length_mm": float(virtual_l0),
                 "virtual_left_col": int(left_x),
@@ -166,8 +167,11 @@ class AnalysisPipelineWorker(QThread):
 
     def run(self) -> None:
         try:
-            fallback_ratio = float(self.config["experiment"]["mm_per_pixel"])
-            interval = float(self.config["experiment"]["sampling_interval_s"])
+            experiment = self.config.get("experiment", {})
+            fallback_ratio = float(experiment.get("mm_per_pixel", 0.045))
+            interval = float(experiment.get("sampling_interval_s", 5.0))
+            if interval <= 0:
+                raise ValueError("experiment.sampling_interval_s must be greater than zero.")
             total = len(self.paired_data)
 
             for i, (mat_f, mts_f) in enumerate(self.paired_data.items()):
@@ -185,6 +189,13 @@ class AnalysisPipelineWorker(QThread):
         finally:
             self.finished.emit()
 
+    @staticmethod
+    def _resolve_frame_time(frame: Any, fallback_interval_s: float) -> tuple[float, str]:
+        raw_time = getattr(frame, "time_s", np.nan)
+        if raw_time is not None and np.isfinite(raw_time):
+            return float(raw_time), "mat_metadata_time"
+        return float(frame.frame_id * fallback_interval_s), "frame_index_interval_fallback"
+
     def _process_specimen(self, mat_path: Path, mts_path: Optional[Path], ratio: float, interval: float) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="cv_"))
         tasks = []
@@ -199,6 +210,8 @@ class AnalysisPipelineWorker(QThread):
                         f"DIC step={frame.subset_spacing_px:.3f} px | "
                         f"grid={frame.dic_point_spacing_mm:.6f} mm/point | source={frame.metadata_source}"
                     )
+
+                frame_time_s, time_source = self._resolve_frame_time(frame, interval)
 
                 u_p = temp_dir / f"u_{frame.frame_id}.npy"
                 exx_p = temp_dir / f"exx_{frame.frame_id}.npy"
@@ -226,7 +239,8 @@ class AnalysisPipelineWorker(QThread):
                         frame.subset_spacing_px,
                         frame.metadata_source,
                         frame.frame_id,
-                        frame.frame_id * interval,
+                        frame_time_s,
+                        time_source,
                     )
                 )
 
@@ -235,22 +249,29 @@ class AnalysisPipelineWorker(QThread):
                 return
 
             results = []
-            cur_max_strain = 0.0
             max_workers = min(10, max(1, multiprocessing.cpu_count() - 2))
 
-            with ProcessPoolExecutor(max_workers=max_workers) as exec:
-                for res in exec.map(analyze_single_frame_task, tasks):
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                for res in executor.map(analyze_single_frame_task, tasks):
                     if res:
-                        cur_max_strain = max(cur_max_strain, res.get("global_strain", 0.0))
-                        res["global_strain"] = cur_max_strain
                         results.append(res)
 
             if not results:
                 self.log_emitted.emit(f"{mat_path.name} extraction failed: no valid frames.")
                 return
 
-            results.sort(key=lambda x: x["Frame"])
+            results.sort(key=lambda x: (x["Time_s"], x["Frame"]))
+            if bool(self.config.get("physics", {}).get("enforce_monotonic_strain", True)):
+                cur_max_strain = 0.0
+                for res in results:
+                    cur_max_strain = max(cur_max_strain, res.get("global_strain", 0.0))
+                    res["global_strain"] = cur_max_strain
+
             df = pd.DataFrame(results)
+
+            if df["Time_s"].duplicated().any():
+                dup = int(df["Time_s"].duplicated().sum())
+                self.log_emitted.emit(f"⚠️ {mat_path.name}: detected {dup} duplicated DIC timestamps; MTS sync may be rejected.")
 
             if mts_path and mts_path.exists():
                 try:
@@ -351,6 +372,7 @@ class AnalysisPipelineWorker(QThread):
                 "DIC_Point_Spacing_mm": [
                     float(df["dic_point_spacing_mm"].dropna().iloc[0]) if "dic_point_spacing_mm" in df else np.nan
                 ],
+                "DIC_Time_Source": [str(ult_row.get("dic_time_source", "unknown"))],
                 "Strain_Source": [str(ult_row.get("strain_source", "unknown"))],
                 "Sync_Status": [str(ult_row.get("sync_status", "unknown"))],
             }
@@ -415,6 +437,7 @@ class AnalysisPipelineWorker(QThread):
             "subset_spacing_px",
             "dic_point_spacing_mm",
             "metadata_source",
+            "dic_time_source",
             "v_map_present",
             "quality_map_present",
             "quality_filter",

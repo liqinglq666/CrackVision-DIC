@@ -31,6 +31,19 @@ class PipelineIO:
         "step",
         "step_size",
     )
+    TIME_KEYS = (
+        "time",
+        "time_s",
+        "seconds",
+        "second",
+        "sec",
+        "timestamp",
+        "frame_time",
+        "image_time",
+        "t",
+        "时间",
+        "秒",
+    )
     QUALITY_KEYS = (
         "plot_corrcoef_dic",
         "plot_corrcoef",
@@ -102,7 +115,7 @@ class PipelineIO:
         experiment = (config or {}).get("experiment", {})
         spacing = float(experiment.get("dic_subset_spacing_px", 1.0))
         ratio = float(fallback_ratio)
-        return DicMetadata(ratio, spacing, ratio * spacing, "config_fallback")
+        return DicMetadata(ratio, spacing, ratio * spacing, "ratio:config_fallback;spacing:config_fallback")
 
     @staticmethod
     def _as_float(value: Any) -> Optional[float]:
@@ -112,7 +125,19 @@ class PipelineIO:
             if arr.size == 0:
                 return None
             val = float(arr.flat[0])
-            return val if val > 0 else None
+            return val if np.isfinite(val) and val > 0 else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _as_time_float(value: Any) -> Optional[float]:
+        try:
+            arr = np.asarray(value, dtype=np.float64)
+            arr = arr[np.isfinite(arr)]
+            if arr.size == 0:
+                return None
+            val = float(arr.flat[0])
+            return val if np.isfinite(val) else None
         except Exception:
             return None
 
@@ -154,6 +179,29 @@ class PipelineIO:
         return None
 
     @staticmethod
+    def _read_obj_time(obj: Any) -> Optional[float]:
+        if obj is None:
+            return None
+        for name in PipelineIO.TIME_KEYS:
+            if hasattr(obj, name):
+                val = PipelineIO._as_time_float(getattr(obj, name))
+                if val is not None:
+                    return val
+        for field in PipelineIO._field_names(obj):
+            field_l = field.lower()
+            if any(name.lower() == field_l or name.lower() in field_l for name in PipelineIO.TIME_KEYS):
+                val = PipelineIO._as_time_float(getattr(obj, field))
+                if val is not None:
+                    return val
+        return None
+
+    @staticmethod
+    def _metadata_source(ratio_from_mat: Optional[float], spacing_from_mat: Optional[float]) -> str:
+        ratio_source = "mat_metadata" if ratio_from_mat is not None else "config_fallback"
+        spacing_source = "mat_metadata" if spacing_from_mat is not None else "config_fallback"
+        return f"ratio:{ratio_source};spacing:{spacing_source}"
+
+    @staticmethod
     def _read_scipy_metadata(mat_path: Path, fallback_ratio: float, config: Optional[dict]) -> DicMetadata:
         mat = loadmat(str(mat_path), struct_as_record=False, squeeze_me=True)
         data = mat.get("data_dic_save")
@@ -162,17 +210,15 @@ class PipelineIO:
 
         dispinfo = getattr(data, "dispinfo", None)
         straininfo = getattr(data, "straininfo", None)
-        ratio = (
-            PipelineIO._read_obj_number(dispinfo, PipelineIO.SCALE_KEYS)
-            or PipelineIO._read_obj_number(straininfo, PipelineIO.SCALE_KEYS)
-            or float(fallback_ratio)
+        ratio_from_mat = PipelineIO._read_obj_number(dispinfo, PipelineIO.SCALE_KEYS) or PipelineIO._read_obj_number(
+            straininfo, PipelineIO.SCALE_KEYS
         )
-        spacing = (
-            PipelineIO._read_obj_number(dispinfo, PipelineIO.SPACING_KEYS)
-            or PipelineIO._read_obj_number(straininfo, PipelineIO.SPACING_KEYS)
-            or float((config or {}).get("experiment", {}).get("dic_subset_spacing_px", 1.0))
+        spacing_from_mat = PipelineIO._read_obj_number(dispinfo, PipelineIO.SPACING_KEYS) or PipelineIO._read_obj_number(
+            straininfo, PipelineIO.SPACING_KEYS
         )
-        source = "mat_metadata" if ratio != fallback_ratio or spacing != 1.0 else "config_fallback"
+        ratio = ratio_from_mat or float(fallback_ratio)
+        spacing = spacing_from_mat or float((config or {}).get("experiment", {}).get("dic_subset_spacing_px", 1.0))
+        source = PipelineIO._metadata_source(ratio_from_mat, spacing_from_mat)
         return DicMetadata(float(ratio), float(spacing), float(ratio) * float(spacing), source)
 
     @staticmethod
@@ -200,18 +246,24 @@ class PipelineIO:
             data_dic = f["data_dic_save"]
             dispinfo = data_dic["dispinfo"] if "dispinfo" in data_dic else None
             straininfo = data_dic["straininfo"] if "straininfo" in data_dic else None
-            ratio = (
-                read_child_number(dispinfo, PipelineIO.SCALE_KEYS)
-                or read_child_number(straininfo, PipelineIO.SCALE_KEYS)
-                or float(fallback_ratio)
+            ratio_from_mat = read_child_number(dispinfo, PipelineIO.SCALE_KEYS) or read_child_number(
+                straininfo, PipelineIO.SCALE_KEYS
             )
-            spacing = (
-                read_child_number(dispinfo, PipelineIO.SPACING_KEYS)
-                or read_child_number(straininfo, PipelineIO.SPACING_KEYS)
-                or float((config or {}).get("experiment", {}).get("dic_subset_spacing_px", 1.0))
+            spacing_from_mat = read_child_number(dispinfo, PipelineIO.SPACING_KEYS) or read_child_number(
+                straininfo, PipelineIO.SPACING_KEYS
             )
-        source = "mat_metadata" if ratio != fallback_ratio or spacing != 1.0 else "config_fallback"
+            ratio = ratio_from_mat or float(fallback_ratio)
+            spacing = spacing_from_mat or float((config or {}).get("experiment", {}).get("dic_subset_spacing_px", 1.0))
+        source = PipelineIO._metadata_source(ratio_from_mat, spacing_from_mat)
         return DicMetadata(float(ratio), float(spacing), float(ratio) * float(spacing), source)
+
+    @staticmethod
+    def _ensure_equal_frame_count(strains_list: list[Any], disp_list: list[Any]) -> None:
+        if len(strains_list) != len(disp_list):
+            raise ValueError(
+                f"DIC frame count mismatch: strains={len(strains_list)}, displacements={len(disp_list)}. "
+                "Refusing to silently truncate frames."
+            )
 
     @staticmethod
     def _stream_scipy_engine(
@@ -229,8 +281,9 @@ class PipelineIO:
         if strains is None or displacements is None:
             raise KeyError("MAT structure is missing 'strains' or 'displacements'.")
 
-        strains_list = strains if isinstance(strains, (list, tuple, np.ndarray)) else [strains]
-        disp_list = displacements if isinstance(displacements, (list, tuple, np.ndarray)) else [displacements]
+        strains_list = list(strains) if isinstance(strains, (list, tuple, np.ndarray)) else [strains]
+        disp_list = list(displacements) if isinstance(displacements, (list, tuple, np.ndarray)) else [displacements]
+        PipelineIO._ensure_equal_frame_count(strains_list, disp_list)
 
         for i, (s_item, d_item) in enumerate(zip(strains_list, disp_list)):
             s_keys = PipelineIO._field_names(s_item)
@@ -250,6 +303,12 @@ class PipelineIO:
                 q_src = d_item if hasattr(d_item, q_key) else s_item
                 raw_q = np.asarray(getattr(q_src, q_key), dtype=np.float64)
 
+            time_s = PipelineIO._read_obj_time(d_item)
+            if time_s is None:
+                time_s = PipelineIO._read_obj_time(s_item)
+            if time_s is None:
+                time_s = np.nan
+
             mask = np.isfinite(raw_exx) & np.isfinite(raw_u)
             if raw_v is not None:
                 mask &= np.isfinite(raw_v)
@@ -259,7 +318,7 @@ class PipelineIO:
                 np.nan_to_num(raw_exx, nan=0.0),
                 mask,
                 metadata.pixel_size_mm,
-                0.0,
+                time_s,
                 v_map=np.nan_to_num(raw_v, nan=np.nan) if raw_v is not None else None,
                 quality_map=np.nan_to_num(raw_q, nan=np.nan) if raw_q is not None else None,
                 subset_spacing_px=metadata.subset_spacing_px,
@@ -278,8 +337,11 @@ class PipelineIO:
             raise ImportError("MATLAB v7.3 files require h5py. Please install h5py.") from exc
 
         metadata = PipelineIO._read_hdf5_metadata(mat_path, fallback_ratio, config)
-        extracted_frames: list[tuple[int, np.ndarray, Optional[np.ndarray], np.ndarray, Optional[np.ndarray]]] = []
+        extracted_frames: list[
+            tuple[int, np.ndarray, Optional[np.ndarray], np.ndarray, Optional[np.ndarray], float]
+        ] = []
         with h5py.File(str(mat_path), "r") as f:
+
             def deref(node: Any) -> Any:
                 while isinstance(node, h5py.Dataset) and node.dtype.kind == "O" and node.size >= 1:
                     node = f[node[:].flatten()[0]]
@@ -287,6 +349,24 @@ class PipelineIO:
 
             def read_matrix(node: Any) -> np.ndarray:
                 return np.asarray(deref(node)[:], dtype=np.float64).T
+
+            def read_group_number(group: Any, names: tuple[str, ...], *, allow_zero: bool = False) -> Optional[float]:
+                if group is None or not hasattr(group, "keys"):
+                    return None
+                for name in names:
+                    for key in list(group.keys()):
+                        if key.lower() == name.lower() or name.lower() in key.lower():
+                            try:
+                                arr = np.asarray(deref(group[key])[:], dtype=np.float64)
+                                arr = arr[np.isfinite(arr)]
+                                if arr.size == 0:
+                                    continue
+                                val = float(arr.flat[0])
+                                if np.isfinite(val) and (allow_zero or val > 0):
+                                    return val
+                            except Exception:
+                                continue
+                return None
 
             if "data_dic_save" not in f:
                 raise KeyError("HDF5 file does not contain 'data_dic_save'.")
@@ -308,7 +388,12 @@ class PipelineIO:
                 if q_key:
                     raw_q = read_matrix(d_grp[q_key] if q_key in d_grp else s_grp[q_key])
                 raw_v = read_matrix(d_grp[v_key]) if v_key else None
-                extracted_frames.append((i, read_matrix(d_grp[u_key]), raw_v, read_matrix(s_grp[exx_key]), raw_q))
+                time_s = read_group_number(d_grp, PipelineIO.TIME_KEYS, allow_zero=True)
+                if time_s is None:
+                    time_s = read_group_number(s_grp, PipelineIO.TIME_KEYS, allow_zero=True)
+                extracted_frames.append(
+                    (i, read_matrix(d_grp[u_key]), raw_v, read_matrix(s_grp[exx_key]), raw_q, np.nan if time_s is None else time_s)
+                )
 
             if isinstance(strains_node, h5py.Group):
                 s_keys = list(strains_node.keys())
@@ -326,25 +411,38 @@ class PipelineIO:
                 if isinstance(exx_item, h5py.Dataset) and exx_item.dtype.kind == "O":
                     exx_refs = exx_item[:].flatten()
                     u_refs = u_item[:].flatten()
+                    if len(exx_refs) != len(u_refs):
+                        raise ValueError(
+                            f"HDF5 frame count mismatch: exx={len(exx_refs)}, u={len(u_refs)}. "
+                            "Refusing to silently truncate frames."
+                        )
                     v_refs = v_item[:].flatten() if v_item is not None else [None] * len(exx_refs)
                     q_refs = q_item[:].flatten() if q_item is not None and q_item.dtype.kind == "O" else [None] * len(exx_refs)
                     for i in range(len(exx_refs)):
                         raw_q = read_matrix(f[q_refs[i]]) if q_refs[i] is not None else None
                         raw_v = read_matrix(f[v_refs[i]]) if v_refs[i] is not None else None
-                        extracted_frames.append((i, read_matrix(f[u_refs[i]]), raw_v, read_matrix(f[exx_refs[i]]), raw_q))
+                        extracted_frames.append((i, read_matrix(f[u_refs[i]]), raw_v, read_matrix(f[exx_refs[i]]), raw_q, np.nan))
                 else:
                     raw_q = read_matrix(q_item) if q_item is not None else None
                     raw_v = read_matrix(v_item) if v_item is not None else None
-                    extracted_frames.append((0, read_matrix(u_item), raw_v, read_matrix(exx_item), raw_q))
+                    time_s = read_group_number(disp_node, PipelineIO.TIME_KEYS, allow_zero=True)
+                    if time_s is None:
+                        time_s = read_group_number(strains_node, PipelineIO.TIME_KEYS, allow_zero=True)
+                    extracted_frames.append((0, read_matrix(u_item), raw_v, read_matrix(exx_item), raw_q, np.nan if time_s is None else time_s))
             elif isinstance(strains_node, h5py.Dataset) and strains_node.dtype.kind == "O":
                 s_refs = strains_node[:].flatten()
                 d_refs = disp_node[:].flatten()
+                if len(s_refs) != len(d_refs):
+                    raise ValueError(
+                        f"HDF5 frame count mismatch: strains={len(s_refs)}, displacements={len(d_refs)}. "
+                        "Refusing to silently truncate frames."
+                    )
                 for i in range(len(s_refs)):
                     read_frame_group(i, deref(f[s_refs[i]]), deref(f[d_refs[i]]))
             else:
                 raise ValueError(f"Unsupported HDF5 DIC structure: {type(strains_node)}")
 
-        for i, raw_u, raw_v, raw_exx, raw_q in extracted_frames:
+        for i, raw_u, raw_v, raw_exx, raw_q, time_s in extracted_frames:
             mask = np.isfinite(raw_exx) & np.isfinite(raw_u)
             if raw_v is not None:
                 mask &= np.isfinite(raw_v)
@@ -354,7 +452,7 @@ class PipelineIO:
                 np.nan_to_num(raw_exx, nan=0.0),
                 mask,
                 metadata.pixel_size_mm,
-                0.0,
+                time_s,
                 v_map=np.nan_to_num(raw_v, nan=np.nan) if raw_v is not None else None,
                 quality_map=np.nan_to_num(raw_q, nan=np.nan) if raw_q is not None else None,
                 subset_spacing_px=metadata.subset_spacing_px,
