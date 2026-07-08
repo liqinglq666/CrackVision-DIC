@@ -35,6 +35,37 @@ quality:
   threshold:
   min_valid_fraction: 0.20
 
+# Crack position detection. Final COD still uses DIC displacement jump.
+# The image mask is only an auxiliary crack-position prior, not the primary width method.
+crack_detection:
+  # Supported values:
+  # - strain_or_image: union of DIC high-exx region and camera crack mask; default, more sensitive.
+  # - strain_and_image: intersection; stricter, may miss fine ECC cracks.
+  # - image_near_strain: image cracks must be near high-exx support.
+  # - strain_only: disable image assistance even if image masks exist.
+  fusion_mode: strain_or_image
+  image_dilation_radius_points: 1
+  strain_dilation_radius_points: 0
+  require_strain_support: false
+
+# Optional camera image crack extraction.
+# Leave disabled if you only want DIC exx + displacement-jump COD.
+image_crack_detection:
+  enabled: false
+  # If empty, the code auto-searches images/, imgs/, frames/, camera/, crack_images/ beside the .mat file.
+  image_dir:
+  # Optional, examples: frame_{frame:04d}.png or {frame}.jpg
+  filename_pattern:
+  frame_index_offset: 0
+  dark_cracks: true
+  background_sigma_px: 12.0
+  threshold_quantile: 0.92
+  otsu_weight: 0.75
+  min_object_area_px: 20
+  min_object_area_points: 5
+  closing_radius_px: 1
+  auto_discover_dir_names: [images, imgs, frames, camera, crack_images]
+
 physics:
   strain_threshold_k: 1.5
   min_cracking_strain: 1.5e-4
@@ -42,6 +73,10 @@ physics:
   morphology_closing_radius_points: 0
   min_crack_area_points: 10
   min_crack_length_mm: 0.2
+
+  # Optional. If set, W_global_est_um uses max(0, strain - stress / E) * spacing.
+  # Unit: MPa. Leave empty to use total strain as a rough sanity check.
+  elastic_modulus_mpa:
 
   # Strongly recommended for angled cracks. If false, COD falls back to u-only projection.
   require_v_map_for_cod: true
