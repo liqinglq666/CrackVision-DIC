@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from skimage import color, exposure, filters, io, morphology, transform, util
+from skimage import color, exposure, filters, io, measure, morphology, transform, util
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +169,7 @@ def image_area_skeleton_width_mm(mask: Optional[np.ndarray], dic_point_spacing_m
         return 0.0, 0.0, 0.0
     mask = np.asarray(mask, dtype=bool)
     skeleton = morphology.skeletonize(mask)
-    labels = morphology.label(skeleton, connectivity=2)
+    labels = measure.label(skeleton, connectivity=2)
     length_mm = _skeleton_length_mm(labels, dic_point_spacing_mm)
     area_mm2 = float(np.count_nonzero(mask)) * float(dic_point_spacing_mm) ** 2
     width_mm = area_mm2 / length_mm if length_mm > 0 else 0.0
