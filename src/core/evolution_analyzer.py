@@ -29,10 +29,16 @@ class EvolutionAnalyzer:
         self.min_overlap_fraction = float(sync.get("min_overlap_fraction", 0.6))
         self.max_missing_fraction = float(sync.get("max_missing_fraction", 0.05))
         self.override_dic_strain = bool(sync.get("override_dic_strain_with_mts", False))
+        self.dic_time_offset_s = float(sync.get("dic_time_offset_s", 0.0))
+        self.mts_time_offset_s = float(sync.get("mts_time_offset_s", 0.0))
         if self.area_mm2 <= 0:
             raise ValueError("cross_section_area_mm2 must be greater than zero.")
         if self.gauge_length_mm <= 0:
             raise ValueError("gauge_length_mm must be greater than zero.")
+        if not 0 <= self.min_overlap_fraction <= 1:
+            raise ValueError("sync.min_overlap_fraction must be within [0, 1].")
+        if not 0 <= self.max_missing_fraction <= 1:
+            raise ValueError("sync.max_missing_fraction must be within [0, 1].")
 
     def _decode_file(self) -> str:
         raw = self.mts_path.read_bytes()
@@ -100,7 +106,7 @@ class EvolutionAnalyzer:
 
         df.columns = [str(col).strip() for col in df.columns]
         unit_hints: dict[str, str] = {}
-        if df.iloc[0].astype(str).str.contains(r"mm|sec|kn|mpa| n$|^n$", case=False, regex=True).any():
+        if df.iloc[0].astype(str).str.contains(r"mm|sec|kn|mpa| n$|^n$|s$", case=False, regex=True).any():
             unit_hints = {col: str(df.iloc[0][col]).strip().lower() for col in df.columns}
             df = df.drop(0).reset_index(drop=True)
 
@@ -116,7 +122,7 @@ class EvolutionAnalyzer:
             raise ValueError(f"Could not identify MTS time/force columns. columns={columns}")
 
         clean = pd.DataFrame()
-        clean["Time_s"] = pd.to_numeric(df[time_col], errors="coerce")
+        clean["Time_s"] = pd.to_numeric(df[time_col], errors="coerce") + self.mts_time_offset_s
         clean["Force_N"] = pd.to_numeric(df[force_col], errors="coerce")
         clean["Disp_mm"] = pd.to_numeric(df[disp_col], errors="coerce") if disp_col else np.nan
 
@@ -130,7 +136,11 @@ class EvolutionAnalyzer:
             force = force * 1000.0
         clean["Force_N"] = force
         clean["Stress_MPa"] = force / self.area_mm2
-        return clean.sort_values("Time_s").drop_duplicates("Time_s").reset_index(drop=True)
+
+        clean = clean.sort_values("Time_s").drop_duplicates("Time_s").reset_index(drop=True)
+        if clean["Time_s"].nunique() < 2:
+            raise ValueError("MTS data needs at least two unique time samples after cleanup.")
+        return clean
 
     def _validate_overlap(self, dic_times: np.ndarray, mts_times: np.ndarray) -> None:
         dic_min, dic_max = float(np.nanmin(dic_times)), float(np.nanmax(dic_times))
@@ -155,17 +165,22 @@ class EvolutionAnalyzer:
 
         df_mts = self._smart_read_mts()
         mts_times = df_mts["Time_s"].to_numpy(dtype=float)
-        if mts_times.size < 2:
-            raise ValueError("MTS data needs at least two unique time samples for interpolation.")
-
-        dic_times = df_dic["Time_s"].to_numpy(dtype=float)
-        self._validate_overlap(dic_times, mts_times)
 
         df_sync = df_dic.copy()
+        df_sync["Time_s"] = pd.to_numeric(df_sync["Time_s"], errors="coerce") + self.dic_time_offset_s
+        df_sync = df_sync.replace([np.inf, -np.inf], np.nan).dropna(subset=["Time_s"]).sort_values("Time_s")
+        if df_sync.empty:
+            raise ValueError("DIC dataframe contains no valid Time_s values.")
+
+        dic_times = df_sync["Time_s"].to_numpy(dtype=float)
+        if np.unique(dic_times).size < 2:
+            raise ValueError("DIC time axis needs at least two unique samples for MTS synchronization.")
+        self._validate_overlap(dic_times, mts_times)
+
         for col in ("Stress_MPa", "Disp_mm", "Force_N"):
             if col in df_mts.columns:
                 values = df_mts[col].to_numpy(dtype=float)
-                valid = np.isfinite(values)
+                valid = np.isfinite(values) & np.isfinite(mts_times)
                 if np.count_nonzero(valid) >= 2:
                     interp = interp1d(
                         mts_times[valid],
