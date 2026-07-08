@@ -26,7 +26,13 @@ def test_cod_uses_vector_projection_with_vertical_displacement():
     skeleton = np.zeros((30, 30), dtype=bool)
     skeleton[10, 5:25] = True
 
-    result = engine.compute_cod(u, skeleton, ratio=0.01, v_map=v)
+    result = engine.compute_cod(
+        u,
+        skeleton,
+        displacement_scale_mm=0.01,
+        dic_point_spacing_mm=0.01,
+        v_map=v,
+    )
 
     assert result["crack_count"] == 1
     assert np.isclose(result["w_max"], 0.01)
@@ -49,4 +55,28 @@ def test_mts_sync_computes_stress_and_global_strain(tmp_path: Path):
     synced = EvolutionAnalyzer(config, mts_path).synchronize(df_dic)
 
     assert np.allclose(synced["Stress_MPa"], [0.0, 5.0, 20.0])
+    assert np.allclose(synced["MTS_Strain"], [0.0, 0.0025, 0.01])
+    assert "global_strain" not in synced.columns
+    assert (synced["strain_source"] == "dic_virtual_extensometer").all()
+
+
+def test_mts_sync_can_override_dic_global_strain(tmp_path: Path):
+    mts_path = tmp_path / "mts.csv"
+    mts_path.write_text(
+        "Time,Load,Displacement\n"
+        "sec,N,mm\n"
+        "0,0,0\n"
+        "5,1000,0.4\n"
+        "10,2000,0.8\n",
+        encoding="utf-8",
+    )
+    df_dic = pd.DataFrame({"Time_s": [0.0, 2.5, 10.0], "global_strain": [0.0, 0.0, 0.0]})
+    config = {
+        "experiment": {"cross_section_area_mm2": 100.0, "gauge_length_mm": 80.0},
+        "sync": {"override_dic_strain_with_mts": True},
+    }
+
+    synced = EvolutionAnalyzer(config, mts_path).synchronize(df_dic)
+
     assert np.allclose(synced["global_strain"], [0.0, 0.0025, 0.01])
+    assert (synced["strain_source"] == "mts_displacement").all()
