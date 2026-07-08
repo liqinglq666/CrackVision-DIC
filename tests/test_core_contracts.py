@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from src.core.image_crack import image_area_skeleton_width_mm
+from src.core.image_crack import ImageCrackMaskProvider, image_area_skeleton_width_mm
 from src.core.io_sync import PipelineIO
 from src.core.physics import CrackPhysicsEngine
 from src.gui.worker import AnalysisPipelineWorker
@@ -74,6 +74,63 @@ def test_image_mask_can_assist_strain_crack_detection():
     assert source == "strain_or_image"
     assert image_fraction > 0
     assert np.count_nonzero(skeleton) > 0
+
+
+def test_strain_only_fusion_ignores_image_mask():
+    config = {
+        "physics": {"min_crack_area_points": 3, "strain_threshold_k": 3.0},
+        "crack_detection": {"fusion_mode": "strain_only", "image_dilation_radius_points": 0},
+    }
+    engine = CrackPhysicsEngine(config)
+    exx = np.zeros((20, 20), dtype=float)
+    valid = np.ones_like(exx, dtype=bool)
+    image_mask = np.zeros_like(valid)
+    image_mask[5:15, 10] = True
+
+    skeleton, _, source, image_fraction = engine.extract_skeleton(exx, valid, image_crack_mask=image_mask)
+
+    assert source == "strain_only"
+    assert image_fraction > 0
+    assert np.count_nonzero(skeleton) == 0
+
+
+def test_image_near_strain_source_name_matches_ui_option():
+    config = {
+        "physics": {"min_crack_area_points": 1, "strain_threshold_k": 1.0, "min_cracking_strain": 1e-6},
+        "crack_detection": {"fusion_mode": "image_near_strain", "image_dilation_radius_points": 1},
+    }
+    engine = CrackPhysicsEngine(config)
+    exx = np.zeros((20, 20), dtype=float)
+    exx[8:12, 10] = 0.01
+    valid = np.ones_like(exx, dtype=bool)
+    image_mask = np.zeros_like(valid)
+    image_mask[5:15, 10] = True
+
+    skeleton, _, source, _ = engine.extract_skeleton(exx, valid, image_crack_mask=image_mask)
+
+    assert source == "image_near_strain"
+    assert np.count_nonzero(skeleton) > 0
+
+
+def test_image_provider_prioritizes_offset_frame_for_filename_pattern(tmp_path):
+    (tmp_path / "frame_0000.png").write_bytes(b"placeholder")
+    (tmp_path / "frame_0002.png").write_bytes(b"placeholder")
+    provider = ImageCrackMaskProvider(
+        {
+            "image_crack_detection": {
+                "enabled": True,
+                "image_dir": str(tmp_path),
+                "filename_pattern": "frame_{frame:04d}.png",
+                "frame_index_offset": 2,
+            }
+        },
+        tmp_path / "A.mat",
+    )
+
+    selected = provider._file_for_frame(0)
+
+    assert selected is not None
+    assert selected.name == "frame_0002.png"
 
 
 def test_cod_exports_median_and_p95_widths():
