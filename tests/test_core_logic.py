@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from src.core.evolution_analyzer import EvolutionAnalyzer
+from src.core.io_sync import PipelineIO
 from src.core.physics import CrackPhysicsEngine
 
 
@@ -80,3 +81,27 @@ def test_mts_sync_can_override_dic_global_strain(tmp_path: Path):
 
     assert np.allclose(synced["global_strain"], [0.0, 0.0025, 0.01])
     assert (synced["strain_source"] == "mts_displacement").all()
+
+
+def test_ncorr_formatted_hdf5_field_names_are_recognized():
+    strain_keys = [
+        "plot_exx_cur_formatted",
+        "plot_exx_ref_formatted",
+        "plot_exy_cur_formatted",
+        "plot_eyy_ref_formatted",
+    ]
+    displacement_keys = [
+        "plot_corrcoef_dic",
+        "plot_u_cur_formatted",
+        "plot_u_dic",
+        "plot_v_cur_formatted",
+        "plot_v_dic",
+    ]
+
+    assert PipelineIO._pick_field(strain_keys, PipelineIO.EXX_KEYS, ("plot_exx", "exx")) == "plot_exx_ref_formatted"
+    assert PipelineIO._pick_field(displacement_keys, PipelineIO.U_KEYS, ("plot_u", "disp_u")) == "plot_u_dic"
+    assert PipelineIO._pick_field(displacement_keys, PipelineIO.V_KEYS, ("plot_v", "disp_v")) == "plot_v_dic"
+    assert (
+        PipelineIO._pick_field(displacement_keys + strain_keys, PipelineIO.QUALITY_KEYS, PipelineIO.QUALITY_KEYS)
+        == "plot_corrcoef_dic"
+    )

@@ -32,6 +32,7 @@ class PipelineIO:
         "step_size",
     )
     QUALITY_KEYS = (
+        "plot_corrcoef_dic",
         "plot_corrcoef",
         "corrcoef",
         "correlation",
@@ -39,6 +40,29 @@ class PipelineIO:
         "sigma",
         "quality",
         "validity",
+    )
+    EXX_KEYS = (
+        "plot_exx_dic",
+        "plot_exx_ref_formatted",
+        "plot_exx_cur_formatted",
+        "plot_exx",
+        "exx",
+    )
+    U_KEYS = (
+        "plot_u_dic",
+        "plot_u_ref_formatted",
+        "plot_u_cur_formatted",
+        "plot_u",
+        "disp_u",
+        "u",
+    )
+    V_KEYS = (
+        "plot_v_dic",
+        "plot_v_ref_formatted",
+        "plot_v_cur_formatted",
+        "plot_v",
+        "disp_v",
+        "v",
     )
 
     @staticmethod
@@ -211,9 +235,9 @@ class PipelineIO:
         for i, (s_item, d_item) in enumerate(zip(strains_list, disp_list)):
             s_keys = PipelineIO._field_names(s_item)
             d_keys = PipelineIO._field_names(d_item)
-            exx_key = PipelineIO._pick_field(s_keys, ("plot_exx", "exx"), ("exx",))
-            u_key = PipelineIO._pick_field(d_keys, ("plot_u", "u", "disp_u"))
-            v_key = PipelineIO._pick_field(d_keys, ("plot_v", "v", "disp_v"))
+            exx_key = PipelineIO._pick_field(s_keys, PipelineIO.EXX_KEYS, ("plot_exx", "exx"))
+            u_key = PipelineIO._pick_field(d_keys, PipelineIO.U_KEYS, ("plot_u", "disp_u"))
+            v_key = PipelineIO._pick_field(d_keys, PipelineIO.V_KEYS, ("plot_v", "disp_v"))
             q_key = PipelineIO._pick_field(d_keys + s_keys, PipelineIO.QUALITY_KEYS, PipelineIO.QUALITY_KEYS)
             if not exx_key or not u_key:
                 raise KeyError(f"Frame {i} is missing exx or u data. fields={d_keys}/{s_keys}")
@@ -274,9 +298,9 @@ class PipelineIO:
             def read_frame_group(i: int, s_grp: Any, d_grp: Any) -> None:
                 s_keys = list(s_grp.keys())
                 d_keys = list(d_grp.keys())
-                exx_key = PipelineIO._pick_field(s_keys, ("plot_exx", "exx"), ("exx",))
-                u_key = PipelineIO._pick_field(d_keys, ("plot_u", "u", "disp_u"))
-                v_key = PipelineIO._pick_field(d_keys, ("plot_v", "v", "disp_v"))
+                exx_key = PipelineIO._pick_field(s_keys, PipelineIO.EXX_KEYS, ("plot_exx", "exx"))
+                u_key = PipelineIO._pick_field(d_keys, PipelineIO.U_KEYS, ("plot_u", "disp_u"))
+                v_key = PipelineIO._pick_field(d_keys, PipelineIO.V_KEYS, ("plot_v", "disp_v"))
                 q_key = PipelineIO._pick_field(d_keys + s_keys, PipelineIO.QUALITY_KEYS, PipelineIO.QUALITY_KEYS)
                 if not exx_key or not u_key:
                     raise KeyError(f"HDF5 frame field matching failed. strains={s_keys}, disp={d_keys}")
@@ -289,9 +313,9 @@ class PipelineIO:
             if isinstance(strains_node, h5py.Group):
                 s_keys = list(strains_node.keys())
                 d_keys = list(disp_node.keys())
-                exx_key = PipelineIO._pick_field(s_keys, ("plot_exx", "exx"), ("exx",))
-                u_key = PipelineIO._pick_field(d_keys, ("plot_u", "u", "disp_u"))
-                v_key = PipelineIO._pick_field(d_keys, ("plot_v", "v", "disp_v"))
+                exx_key = PipelineIO._pick_field(s_keys, PipelineIO.EXX_KEYS, ("plot_exx", "exx"))
+                u_key = PipelineIO._pick_field(d_keys, PipelineIO.U_KEYS, ("plot_u", "disp_u"))
+                v_key = PipelineIO._pick_field(d_keys, PipelineIO.V_KEYS, ("plot_v", "disp_v"))
                 q_key = PipelineIO._pick_field(d_keys + s_keys, PipelineIO.QUALITY_KEYS, PipelineIO.QUALITY_KEYS)
                 if not exx_key or not u_key:
                     raise KeyError(f"HDF5 field matching failed. strains={s_keys}, disp={d_keys}")
