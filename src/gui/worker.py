@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
+from openpyxl.utils import get_column_letter
 from PySide6.QtCore import QThread, Signal
 
 from src.core.evolution_analyzer import EvolutionAnalyzer
@@ -288,146 +289,478 @@ class AnalysisPipelineWorker(QThread):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     def _export_results(self, mat_path: Path, df: pd.DataFrame, results: list[Dict[str, Any]]) -> None:
-        df["Strain_pct"] = df.get("global_strain", 0.0) * 100.0
-        df["W_avg_um"] = df.get("w_avg", 0.0) * 1000.0
-        df["W_max_um"] = df.get("w_max", 0.0) * 1000.0
-        df["W_99_um"] = df.get("w_99", 0.0) * 1000.0
-        df["crack_spacing_mm"] = df.get("crack_spacing_mm", 0.0)
+        specimen = mat_path.stem
+        frame_df = self._prepare_frame_table(specimen, df)
+        key_rows = self._select_key_rows(frame_df)
+        sat_row = key_rows["Saturated"]
+        ult_row = key_rows["Ultimate"]
+
+        target_df = self._build_target_state_table(specimen, frame_df)
+        key_crack_df = self._build_key_crack_table(specimen, results, key_rows)
+        target_crack_df = self._build_target_crack_table(specimen, results, target_df)
+        crack_tidy_df = pd.concat([key_crack_df, target_crack_df], ignore_index=True)
+        distribution_df = self._build_distribution_table(crack_tidy_df)
+        summary_df = self._build_specimen_summary(specimen, frame_df, sat_row, ult_row, crack_tidy_df)
+        qa_frame_df = self._build_qa_frame_status(frame_df)
+        qa_meta_df = self._qa_frame(frame_df)
+        validation_df = self._validation_frame(mat_path, frame_df)
+        guide_df = self._sheet_guide_frame()
+
+        origin_f = self.out_dir / f"{specimen}_Origin_Plot_Data.xlsx"
+        with pd.ExcelWriter(origin_f, engine="openpyxl") as writer:
+            self._write_sheet(writer, guide_df, "00_READ_ME")
+            self._write_sheet(writer, self._origin_curve_table(frame_df), "01_Frame_Curves")
+            self._write_sheet(writer, target_df, "02_Target_States")
+            self._write_sheet(writer, distribution_df, "03_Distribution_Tidy")
+            self._write_sheet(writer, crack_tidy_df, "04_Crack_Tidy")
+
+        stat_f = self.out_dir / f"{specimen}_Statistics_Report.xlsx"
+        with pd.ExcelWriter(stat_f, engine="openpyxl") as writer:
+            self._write_sheet(writer, summary_df, "00_Specimen_Summary")
+            self._write_sheet(writer, frame_df, "01_Frame_All")
+            self._write_sheet(writer, target_df, "02_Target_Summary")
+            self._write_sheet(writer, key_crack_df, "03_Key_Crack_Details")
+            self._write_sheet(writer, distribution_df, "04_Distribution_Tidy")
+            self._write_sheet(writer, qa_frame_df, "05_QA_Frame_Status")
+            self._write_sheet(writer, qa_meta_df, "06_QA_Metadata")
+            self._write_sheet(writer, validation_df, "07_Validation")
+
+        self._update_batch_summary(summary_df, target_df)
+
+        for r in results:
+            r.pop("per_crack_details", None)
+            r.pop("raw_widths", None)
+
+        self.log_emitted.emit(f"Origin data generated: {origin_f.name}")
+        self.log_emitted.emit(f"Statistics report generated: {stat_f.name}")
+        self.specimen_processed.emit(str(origin_f), str(stat_f))
+
+    @staticmethod
+    def _prepare_frame_table(specimen: str, df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        out["Specimen"] = specimen
+        out["Strain_pct"] = pd.to_numeric(out.get("global_strain", 0.0), errors="coerce").fillna(0.0) * 100.0
+        out["W_avg_um"] = pd.to_numeric(out.get("w_avg", 0.0), errors="coerce").fillna(0.0) * 1000.0
+        out["W_max_um"] = pd.to_numeric(out.get("w_max", 0.0), errors="coerce").fillna(0.0) * 1000.0
+        out["W_99_um"] = pd.to_numeric(out.get("w_99", 0.0), errors="coerce").fillna(0.0) * 1000.0
+        out["crack_spacing_mm"] = pd.to_numeric(out.get("crack_spacing_mm", 0.0), errors="coerce").fillna(0.0)
 
         for col in [
+            "Frame",
+            "Time_s",
+            "global_strain",
             "Strain_pct",
+            "Stress_MPa",
+            "Force_N",
+            "Disp_mm",
+            "MTS_Strain",
+            "crack_count",
+            "crack_spacing_mm",
+            "W_avg_um",
+            "W_99_um",
+            "W_max_um",
+            "cod_sample_count",
+            "quality_valid_fraction",
+            "strain_threshold_used",
+            "pixel_size_mm",
+            "subset_spacing_px",
+            "dic_point_spacing_mm",
+        ]:
+            if col not in out.columns:
+                out[col] = np.nan
+
+        ult_s_raw = float(pd.to_numeric(out["global_strain"], errors="coerce").max(skipna=True) or 0.0)
+        out["Normalized_Strain"] = out["global_strain"] / ult_s_raw if ult_s_raw > 0 else 0.0
+        time_span = float(pd.to_numeric(out["Time_s"], errors="coerce").max(skipna=True) or 0.0)
+        out["Normalized_Time"] = out["Time_s"] / time_span if time_span > 0 else 0.0
+
+        drop_cols = ["raw_widths", "per_crack_details"]
+        out = out.drop(columns=[c for c in drop_cols if c in out.columns], errors="ignore")
+
+        front_cols = [
+            "Specimen",
+            "Frame",
+            "Time_s",
+            "Normalized_Time",
+            "global_strain",
+            "Strain_pct",
+            "Normalized_Strain",
+            "Stress_MPa",
+            "Force_N",
+            "Disp_mm",
+            "MTS_Strain",
+            "crack_count",
+            "crack_spacing_mm",
+            "W_avg_um",
+            "W_99_um",
+            "W_max_um",
+            "cod_sample_count",
+            "quality_valid_fraction",
+            "strain_threshold_used",
+            "cod_status",
+            "sync_status",
+            "dic_time_source",
+            "strain_source",
+            "metadata_source",
+            "v_map_present",
+            "quality_map_present",
+            "quality_filter",
+            "cod_vector_mode",
+            "pixel_size_mm",
+            "subset_spacing_px",
+            "dic_point_spacing_mm",
+            "virtual_gauge_length_mm",
+            "virtual_left_col",
+            "virtual_right_col",
+        ]
+        ordered_cols = [c for c in front_cols if c in out.columns] + [c for c in out.columns if c not in front_cols]
+        return out[ordered_cols].sort_values(["Time_s", "Frame"], na_position="last").reset_index(drop=True)
+
+    @staticmethod
+    def _select_key_rows(frame_df: pd.DataFrame) -> dict[str, pd.Series]:
+        if frame_df.empty:
+            empty = pd.Series(dtype=object)
+            return {"Saturated": empty, "Ultimate": empty, "First_Crack": empty, "Max_Width": empty}
+
+        crack_count = pd.to_numeric(frame_df["crack_count"], errors="coerce").fillna(0.0)
+        sat_idx = crack_count.idxmax()
+
+        if "Stress_MPa" in frame_df.columns and not frame_df["Stress_MPa"].isna().all():
+            ult_idx = pd.to_numeric(frame_df["Stress_MPa"], errors="coerce").idxmax()
+        else:
+            ult_idx = pd.to_numeric(frame_df["Strain_pct"], errors="coerce").idxmax()
+
+        width_idx = pd.to_numeric(frame_df["W_max_um"], errors="coerce").fillna(0.0).idxmax()
+        opened = frame_df[crack_count > 0]
+        first_idx = opened.index[0] if not opened.empty else sat_idx
+
+        return {
+            "Saturated": frame_df.loc[sat_idx],
+            "Ultimate": frame_df.loc[ult_idx],
+            "First_Crack": frame_df.loc[first_idx],
+            "Max_Width": frame_df.loc[width_idx],
+        }
+
+    def _build_target_state_table(self, specimen: str, frame_df: pd.DataFrame) -> pd.DataFrame:
+        rows = []
+        targets = self.config.get("export", {}).get("target_strains", [0.2, 2.0, 4.0, 6.0])
+        max_strain = float(pd.to_numeric(frame_df["Strain_pct"], errors="coerce").max(skipna=True) or 0.0)
+
+        for target in targets:
+            target = float(target)
+            if frame_df.empty:
+                rows.append({"Specimen": specimen, "State": f"Target_{target:g}%", "Target_Strain_pct": target, "Status": "empty"})
+                continue
+
+            if target <= max_strain:
+                idx = (pd.to_numeric(frame_df["Strain_pct"], errors="coerce") - target).abs().idxmin()
+                row = frame_df.loc[idx]
+                status = "reached"
+            else:
+                idx = pd.to_numeric(frame_df["Strain_pct"], errors="coerce").idxmax()
+                row = frame_df.loc[idx]
+                status = "not_reached"
+
+            rows.append(self._state_row(specimen, f"Target_{target:g}%", row, target, status))
+
+        return pd.DataFrame(rows)
+
+    @staticmethod
+    def _state_row(specimen: str, state: str, row: pd.Series, target: float | None, status: str) -> dict[str, Any]:
+        return {
+            "Specimen": specimen,
+            "State": state,
+            "Target_Strain_pct": target,
+            "Status": status,
+            "Frame": int(row.get("Frame", -1)) if pd.notna(row.get("Frame", np.nan)) else np.nan,
+            "Time_s": float(row.get("Time_s", np.nan)) if pd.notna(row.get("Time_s", np.nan)) else np.nan,
+            "Real_Strain_pct": float(row.get("Strain_pct", np.nan)) if pd.notna(row.get("Strain_pct", np.nan)) else np.nan,
+            "Normalized_Strain": float(row.get("Normalized_Strain", np.nan)) if pd.notna(row.get("Normalized_Strain", np.nan)) else np.nan,
+            "Stress_MPa": float(row.get("Stress_MPa", np.nan)) if pd.notna(row.get("Stress_MPa", np.nan)) else np.nan,
+            "Crack_Count": int(row.get("crack_count", 0)) if pd.notna(row.get("crack_count", np.nan)) else 0,
+            "Crack_Spacing_mm": float(row.get("crack_spacing_mm", np.nan)) if pd.notna(row.get("crack_spacing_mm", np.nan)) else np.nan,
+            "W_avg_um": float(row.get("W_avg_um", np.nan)) if pd.notna(row.get("W_avg_um", np.nan)) else np.nan,
+            "W_99_um": float(row.get("W_99_um", np.nan)) if pd.notna(row.get("W_99_um", np.nan)) else np.nan,
+            "W_max_um": float(row.get("W_max_um", np.nan)) if pd.notna(row.get("W_max_um", np.nan)) else np.nan,
+            "Quality_Valid_Fraction": float(row.get("quality_valid_fraction", np.nan)) if pd.notna(row.get("quality_valid_fraction", np.nan)) else np.nan,
+            "COD_Status": str(row.get("cod_status", "")),
+            "Sync_Status": str(row.get("sync_status", "")),
+        }
+
+    def _build_key_crack_table(
+        self, specimen: str, results: list[Dict[str, Any]], key_rows: dict[str, pd.Series]
+    ) -> pd.DataFrame:
+        tables = []
+        for state, row in key_rows.items():
+            if row.empty:
+                continue
+            details = self._details_for_frame(results, row.get("Frame"))
+            tables.append(self._format_crack_details(specimen, state, None, row, details))
+        if tables:
+            return pd.concat(tables, ignore_index=True)
+        return self._empty_crack_table()
+
+    def _build_target_crack_table(self, specimen: str, results: list[Dict[str, Any]], target_df: pd.DataFrame) -> pd.DataFrame:
+        tables = []
+        for _, state in target_df.iterrows():
+            if state.get("Status") != "reached":
+                continue
+            frame = state.get("Frame")
+            details = self._details_for_frame(results, frame)
+            row = pd.Series(
+                {
+                    "Frame": frame,
+                    "Time_s": state.get("Time_s"),
+                    "Strain_pct": state.get("Real_Strain_pct"),
+                    "Stress_MPa": state.get("Stress_MPa"),
+                    "quality_valid_fraction": state.get("Quality_Valid_Fraction"),
+                    "cod_status": state.get("COD_Status"),
+                }
+            )
+            tables.append(self._format_crack_details(specimen, state.get("State", "Target"), state.get("Target_Strain_pct"), row, details))
+        if tables:
+            return pd.concat(tables, ignore_index=True)
+        return self._empty_crack_table()
+
+    @staticmethod
+    def _empty_crack_table() -> pd.DataFrame:
+        return pd.DataFrame(
+            columns=[
+                "Specimen",
+                "State",
+                "Target_Strain_pct",
+                "Frame",
+                "Time_s",
+                "Real_Strain_pct",
+                "Stress_MPa",
+                "Crack_ID",
+                "Length_mm",
+                "W_avg_um",
+                "W_max_um",
+                "Sample_Count",
+                "Quality_Valid_Fraction",
+                "COD_Status",
+            ]
+        )
+
+    @classmethod
+    def _format_crack_details(
+        cls, specimen: str, state: str, target: float | None, frame_row: pd.Series, details: pd.DataFrame
+    ) -> pd.DataFrame:
+        if details is None or details.empty:
+            return cls._empty_crack_table()
+
+        out = details.copy()
+        out["Specimen"] = specimen
+        out["State"] = state
+        out["Target_Strain_pct"] = target
+        out["Frame"] = int(frame_row.get("Frame", -1)) if pd.notna(frame_row.get("Frame", np.nan)) else np.nan
+        out["Time_s"] = float(frame_row.get("Time_s", np.nan)) if pd.notna(frame_row.get("Time_s", np.nan)) else np.nan
+        out["Real_Strain_pct"] = float(frame_row.get("Strain_pct", np.nan)) if pd.notna(frame_row.get("Strain_pct", np.nan)) else np.nan
+        out["Stress_MPa"] = float(frame_row.get("Stress_MPa", np.nan)) if pd.notna(frame_row.get("Stress_MPa", np.nan)) else np.nan
+        out["W_avg_um"] = pd.to_numeric(out.get("W_avg_mm", np.nan), errors="coerce") * 1000.0
+        out["W_max_um"] = pd.to_numeric(out.get("W_max_mm", np.nan), errors="coerce") * 1000.0
+        out["Length_mm"] = pd.to_numeric(out.get("Length_mm", out.get("L_mm", np.nan)), errors="coerce")
+        out["Sample_Count"] = pd.to_numeric(out.get("count", np.nan), errors="coerce")
+        out["Quality_Valid_Fraction"] = frame_row.get("quality_valid_fraction", np.nan)
+        out["COD_Status"] = frame_row.get("cod_status", "")
+
+        keep = [
+            "Specimen",
+            "State",
+            "Target_Strain_pct",
+            "Frame",
+            "Time_s",
+            "Real_Strain_pct",
+            "Stress_MPa",
+            "Crack_ID",
+            "Length_mm",
+            "W_avg_um",
+            "W_max_um",
+            "Sample_Count",
+            "Quality_Valid_Fraction",
+            "COD_Status",
+        ]
+        for col in keep:
+            if col not in out.columns:
+                out[col] = np.nan
+        return out[keep].sort_values(["State", "W_avg_um"], ascending=[True, False]).reset_index(drop=True)
+
+    @staticmethod
+    def _build_distribution_table(crack_tidy_df: pd.DataFrame) -> pd.DataFrame:
+        if crack_tidy_df.empty:
+            return pd.DataFrame(columns=["Specimen", "State", "Metric", "Value_um", "Crack_ID", "Frame", "Real_Strain_pct"])
+
+        rows = []
+        for _, row in crack_tidy_df.iterrows():
+            for metric in ("W_avg_um", "W_max_um"):
+                value = row.get(metric)
+                if pd.notna(value):
+                    rows.append(
+                        {
+                            "Specimen": row.get("Specimen"),
+                            "State": row.get("State"),
+                            "Metric": metric,
+                            "Value_um": float(value),
+                            "Crack_ID": row.get("Crack_ID"),
+                            "Frame": row.get("Frame"),
+                            "Real_Strain_pct": row.get("Real_Strain_pct"),
+                        }
+                    )
+        return pd.DataFrame(rows)
+
+    @staticmethod
+    def _origin_curve_table(frame_df: pd.DataFrame) -> pd.DataFrame:
+        cols = [
+            "Specimen",
+            "Frame",
+            "Time_s",
+            "Normalized_Time",
+            "Strain_pct",
+            "Normalized_Strain",
+            "Stress_MPa",
             "crack_count",
             "crack_spacing_mm",
             "W_avg_um",
             "W_99_um",
             "W_max_um",
             "quality_valid_fraction",
-            "strain_threshold_used",
-        ]:
-            if col not in df.columns:
-                df[col] = 0.0
+            "cod_status",
+            "sync_status",
+        ]
+        return frame_df[[c for c in cols if c in frame_df.columns]].copy()
 
-        sat_idx = df["crack_count"].idxmax()
-        if "Stress_MPa" in df.columns and not df["Stress_MPa"].isna().all():
-            ult_idx = df["Stress_MPa"].idxmax()
-        else:
-            ult_idx = df["Strain_pct"].idxmax()
+    @staticmethod
+    def _build_specimen_summary(
+        specimen: str, frame_df: pd.DataFrame, sat_row: pd.Series, ult_row: pd.Series, crack_tidy_df: pd.DataFrame
+    ) -> pd.DataFrame:
+        has_stress = "Stress_MPa" in frame_df.columns and not frame_df["Stress_MPa"].isna().all()
+        first_frame = frame_df.iloc[0] if not frame_df.empty else pd.Series(dtype=object)
+        max_strain = float(pd.to_numeric(frame_df.get("Strain_pct", pd.Series(dtype=float)), errors="coerce").max(skipna=True) or 0.0)
+        max_crack_count = int(pd.to_numeric(frame_df.get("crack_count", pd.Series(dtype=float)), errors="coerce").max(skipna=True) or 0)
 
-        ult_s_raw = float(df.loc[ult_idx, "global_strain"])
-        df["Normalized_Strain"] = df["global_strain"] / ult_s_raw if ult_s_raw > 0 else 0.0
-        sat_row = df.loc[sat_idx]
-        ult_row = df.loc[ult_idx]
-
-        out_f = self.out_dir / f"{mat_path.stem}_Origin_Plot_Data.xlsx"
-        with pd.ExcelWriter(out_f, engine="openpyxl") as writer:
-            fig1_cols = [
-                "Strain_pct",
-                "crack_count",
-                "crack_spacing_mm",
-                "W_avg_um",
-                "W_99_um",
-                "W_max_um",
-                "quality_valid_fraction",
+        return pd.DataFrame(
+            [
+                {
+                    "Specimen": specimen,
+                    "Frame_Count": int(len(frame_df)),
+                    "Time_Start_s": float(frame_df["Time_s"].min()) if "Time_s" in frame_df else np.nan,
+                    "Time_End_s": float(frame_df["Time_s"].max()) if "Time_s" in frame_df else np.nan,
+                    "Max_Strain_pct": max_strain,
+                    "UTS_Stress_MPa": float(ult_row.get("Stress_MPa", np.nan)) if has_stress else np.nan,
+                    "Ultimate_Frame": int(ult_row.get("Frame", -1)) if pd.notna(ult_row.get("Frame", np.nan)) else np.nan,
+                    "Ultimate_Strain_pct": float(ult_row.get("Strain_pct", np.nan)) if pd.notna(ult_row.get("Strain_pct", np.nan)) else np.nan,
+                    "Ultimate_W_99_um": float(ult_row.get("W_99_um", np.nan)) if pd.notna(ult_row.get("W_99_um", np.nan)) else np.nan,
+                    "Ultimate_W_max_um": float(ult_row.get("W_max_um", np.nan)) if pd.notna(ult_row.get("W_max_um", np.nan)) else np.nan,
+                    "Saturated_Frame": int(sat_row.get("Frame", -1)) if pd.notna(sat_row.get("Frame", np.nan)) else np.nan,
+                    "Saturated_Strain_pct": float(sat_row.get("Strain_pct", np.nan)) if pd.notna(sat_row.get("Strain_pct", np.nan)) else np.nan,
+                    "Saturated_Crack_Count": int(sat_row.get("crack_count", max_crack_count)) if pd.notna(sat_row.get("crack_count", np.nan)) else max_crack_count,
+                    "Saturated_Spacing_mm": float(sat_row.get("crack_spacing_mm", np.nan)) if pd.notna(sat_row.get("crack_spacing_mm", np.nan)) else np.nan,
+                    "Saturated_W_avg_um": float(sat_row.get("W_avg_um", np.nan)) if pd.notna(sat_row.get("W_avg_um", np.nan)) else np.nan,
+                    "Crack_Detail_Rows": int(len(crack_tidy_df)),
+                    "Pixel_Size_mm_per_px": first_frame.get("pixel_size_mm", np.nan),
+                    "Subset_Spacing_px": first_frame.get("subset_spacing_px", np.nan),
+                    "DIC_Point_Spacing_mm": first_frame.get("dic_point_spacing_mm", np.nan),
+                    "Metadata_Source": first_frame.get("metadata_source", ""),
+                    "DIC_Time_Source": first_frame.get("dic_time_source", ""),
+                    "Strain_Source": ult_row.get("strain_source", ""),
+                    "Sync_Status": ult_row.get("sync_status", ""),
+                    "Worst_COD_Status_Count": int((frame_df.get("cod_status", pd.Series(dtype=str)).astype(str) != "ok").sum()) if "cod_status" in frame_df else 0,
+                    "Min_Quality_Valid_Fraction": float(frame_df["quality_valid_fraction"].min()) if "quality_valid_fraction" in frame_df else np.nan,
+                }
             ]
-            df[fig1_cols].to_excel(writer, sheet_name="Fig1_Dynamics", index=False)
-            df[["Normalized_Strain", "crack_count", "W_avg_um", "W_max_um"]].to_excel(
-                writer, sheet_name="Fig2_Normalized", index=False
-            )
+        )
 
-            p_sat = self._details_for_frame(results, sat_row["Frame"])
-            p_ult = self._details_for_frame(results, ult_row["Frame"])
-            dist_dict = {
-                "Saturated_um": pd.Series(p_sat["W_avg_mm"].values * 1000.0) if not p_sat.empty else pd.Series(dtype=float),
-                "Ultimate_um": pd.Series(p_ult["W_avg_mm"].values * 1000.0) if not p_ult.empty else pd.Series(dtype=float),
-            }
-            pd.DataFrame(dist_dict).to_excel(writer, sheet_name="Fig3_Distribution", index=False)
+    @staticmethod
+    def _build_qa_frame_status(frame_df: pd.DataFrame) -> pd.DataFrame:
+        cols = [
+            "Specimen",
+            "Frame",
+            "Time_s",
+            "Strain_pct",
+            "quality_valid_fraction",
+            "quality_filter",
+            "quality_map_present",
+            "v_map_present",
+            "cod_status",
+            "cod_vector_mode",
+            "cod_sample_count",
+            "sync_status",
+            "dic_time_source",
+            "strain_source",
+            "metadata_source",
+            "pixel_size_mm",
+            "subset_spacing_px",
+            "dic_point_spacing_mm",
+            "strain_threshold_used",
+        ]
+        return frame_df[[c for c in cols if c in frame_df.columns]].copy()
 
-            grad_data = {}
-            for ts in self.config.get("export", {}).get("target_strains", [0.2, 2.0, 4.0, 6.0]):
-                if ts <= df["Strain_pct"].max():
-                    idx = (df["Strain_pct"] - ts).abs().idxmin()
-                    p_d = self._details_for_frame(results, df.loc[idx, "Frame"])
-                    if not p_d.empty:
-                        grad_data[f"Strain_{df.loc[idx, 'Strain_pct']:.2f}%_um"] = p_d["W_avg_mm"] * 1000.0
-            if not grad_data:
-                grad_data = {"Notice": ["No cracks reached target strains"]}
-            pd.DataFrame({k: pd.Series(v) for k, v in grad_data.items()}).to_excel(
-                writer, sheet_name="Fig4_Gradient", index=False
-            )
+    @staticmethod
+    def _sheet_guide_frame() -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {"Sheet": "01_Frame_Curves", "Use": "直接画时序图：strain/stress/crack count/spacing/COD。"},
+                {"Sheet": "02_Target_States", "Use": "目标应变点摘要。没达到也会保留 not_reached 行。"},
+                {"Sheet": "03_Distribution_Tidy", "Use": "长表分布数据，适合 Origin boxplot/violin/KDE。"},
+                {"Sheet": "04_Crack_Tidy", "Use": "一行一条裂缝，带 State/Frame/strain。透视表友好。"},
+                {"Sheet": "Statistics_Report", "Use": "完整逐帧表、QA、验证、单试件摘要。"},
+            ]
+        )
 
-        stat_f = self.out_dir / f"{mat_path.stem}_Statistics_Report.xlsx"
-        with pd.ExcelWriter(stat_f, engine="openpyxl") as writer:
-            has_stress = "Stress_MPa" in df.columns and not df["Stress_MPa"].isna().all()
-            summary_dict = {
-                "Specimen": [mat_path.stem],
-                "UTS_Stress_MPa": [float(ult_row.get("Stress_MPa", np.nan)) if has_stress else np.nan],
-                "Ultimate_Strain_pct": [float(ult_row["Strain_pct"])],
-                "Saturated_Crack_Count": [int(sat_row["crack_count"])],
-                "Saturated_Spacing_mm": [float(sat_row["crack_spacing_mm"])],
-                "Saturated_W_avg_um": [float(sat_row["W_avg_um"])],
-                "Ultimate_W_99_um": [float(ult_row["W_99_um"])],
-                "Ultimate_W_max_um": [float(ult_row["W_max_um"])],
-                "Pixel_Size_mm_per_px": [float(df["pixel_size_mm"].dropna().iloc[0]) if "pixel_size_mm" in df else np.nan],
-                "Subset_Spacing_px": [float(df["subset_spacing_px"].dropna().iloc[0]) if "subset_spacing_px" in df else np.nan],
-                "DIC_Point_Spacing_mm": [
-                    float(df["dic_point_spacing_mm"].dropna().iloc[0]) if "dic_point_spacing_mm" in df else np.nan
-                ],
-                "DIC_Time_Source": [str(ult_row.get("dic_time_source", "unknown"))],
-                "Strain_Source": [str(ult_row.get("strain_source", "unknown"))],
-                "Sync_Status": [str(ult_row.get("sync_status", "unknown"))],
-            }
-            pd.DataFrame(summary_dict).to_excel(writer, sheet_name="01_Macro_Summary", index=False)
+    @staticmethod
+    def _write_sheet(writer: pd.ExcelWriter, df: pd.DataFrame, sheet_name: str) -> None:
+        safe_df = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
+        if safe_df.empty and len(safe_df.columns) == 0:
+            safe_df = pd.DataFrame({"Notice": ["No data"]})
+        safe_df.to_excel(writer, sheet_name=sheet_name, index=False)
+        ws = writer.sheets[sheet_name]
+        ws.freeze_panes = "A2"
+        if ws.max_row >= 1 and ws.max_column >= 1:
+            ws.auto_filter.ref = ws.dimensions
+        for idx, column_cells in enumerate(ws.columns, start=1):
+            max_len = 0
+            for cell in column_cells:
+                value = cell.value
+                if value is None:
+                    continue
+                max_len = max(max_len, len(str(value)))
+            ws.column_dimensions[get_column_letter(idx)].width = max(10, min(max_len + 2, 42))
 
-            grad_rows = []
-            for ts in [0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]:
-                if ts <= df["Strain_pct"].max():
-                    idx = (df["Strain_pct"] - ts).abs().idxmin()
-                    grad_rows.append(
-                        {
-                            "Target_Strain_pct": ts,
-                            "Real_Strain_pct": float(df.loc[idx, "Strain_pct"]),
-                            "Crack_Count": int(df.loc[idx, "crack_count"]),
-                            "Spacing_mm": float(df.loc[idx, "crack_spacing_mm"]),
-                            "W_avg_um": float(df.loc[idx, "W_avg_um"]),
-                            "W_99_um": float(df.loc[idx, "W_99_um"]),
-                            "Quality_Valid_Fraction": float(df.loc[idx, "quality_valid_fraction"]),
-                        }
-                    )
-            if not grad_rows:
-                grad_rows = [{"Notice": "No data reached target strains"}]
-            pd.DataFrame(grad_rows).to_excel(writer, sheet_name="02_Gradient_States", index=False)
+    def _update_batch_summary(self, summary_df: pd.DataFrame, target_df: pd.DataFrame) -> None:
+        batch_path = self.out_dir / "_Batch_Summary.xlsx"
+        try:
+            if batch_path.exists():
+                old_summary = pd.read_excel(batch_path, sheet_name="Specimen_Summary")
+                old_targets = pd.read_excel(batch_path, sheet_name="Target_Summary")
+            else:
+                old_summary = pd.DataFrame()
+                old_targets = pd.DataFrame()
 
-            self._export_crack_details(writer, p_sat, "03_Saturated_Cracks")
-            self._export_crack_details(writer, p_ult, "04_Ultimate_Cracks")
-            self._qa_frame(df).to_excel(writer, sheet_name="05_QA_Metadata", index=False)
-            self._validation_frame(mat_path, df).to_excel(writer, sheet_name="06_Validation", index=False)
+            specimen = str(summary_df.iloc[0]["Specimen"]) if not summary_df.empty else ""
+            if not old_summary.empty and "Specimen" in old_summary.columns:
+                old_summary = old_summary[old_summary["Specimen"].astype(str) != specimen]
+            if not old_targets.empty and "Specimen" in old_targets.columns:
+                old_targets = old_targets[old_targets["Specimen"].astype(str) != specimen]
 
-        for r in results:
-            r.pop("per_crack_details", None)
-            r.pop("raw_widths", None)
+            merged_summary = pd.concat([old_summary, summary_df], ignore_index=True)
+            merged_targets = pd.concat([old_targets, target_df], ignore_index=True)
 
-        self.log_emitted.emit(f"Statistics report generated: {stat_f.name}")
-        self.specimen_processed.emit(str(out_f), str(stat_f))
+            with pd.ExcelWriter(batch_path, engine="openpyxl") as writer:
+                self._write_sheet(writer, merged_summary, "Specimen_Summary")
+                self._write_sheet(writer, merged_targets, "Target_Summary")
+        except Exception as exc:
+            logger.warning("Batch summary export failed: %s", exc, exc_info=True)
+            self.log_emitted.emit(f"⚠️ Batch summary export failed: {exc}")
 
     @staticmethod
     def _details_for_frame(results: list[Dict[str, Any]], frame: Any) -> pd.DataFrame:
+        if pd.isna(frame):
+            return pd.DataFrame()
         for r in results:
             if int(r["Frame"]) == int(frame):
                 return r.get("per_crack_details", pd.DataFrame())
         return pd.DataFrame()
-
-    @staticmethod
-    def _export_crack_details(writer: pd.ExcelWriter, p_df: pd.DataFrame, sheet_name: str) -> None:
-        if not p_df.empty:
-            out_df = p_df.copy()
-            out_df["W_avg_um"] = out_df["W_avg_mm"] * 1000.0
-            out_df["W_max_um"] = out_df["W_max_mm"] * 1000.0
-            keep = ["Crack_ID", "Length_mm", "W_avg_um", "W_max_um", "count"]
-            out_df[[c for c in keep if c in out_df.columns]].sort_values(
-                "W_avg_um", ascending=False
-            ).to_excel(writer, sheet_name=sheet_name, index=False)
-        else:
-            pd.DataFrame({"Notice": ["No Cracks Detected"]}).to_excel(writer, sheet_name=sheet_name, index=False)
 
     @staticmethod
     def _qa_frame(df: pd.DataFrame) -> pd.DataFrame:
