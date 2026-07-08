@@ -159,13 +159,20 @@ class CrackPhysicsEngine:
         self.quality_threshold = quality.get("threshold")
         self.min_valid_fraction = float(quality.get("min_valid_fraction", 0.2))
 
+        if self.cod_max <= 0:
+            raise ValueError("physics.cod_max_mm must be greater than zero.")
+        if self.cod_min < 0:
+            raise ValueError("physics.cod_min_mm cannot be negative.")
+        if self.min_valid_fraction < 0 or self.min_valid_fraction > 1:
+            raise ValueError("quality.min_valid_fraction must be within [0, 1].")
+
     def build_quality_mask(
         self, mask: np.ndarray, u_map: np.ndarray, v_map: np.ndarray | None, quality_map: np.ndarray | None
     ) -> tuple[np.ndarray, float, str]:
-        finite = mask & np.isfinite(u_map)
+        finite = np.asarray(mask, dtype=bool) & np.isfinite(u_map)
         if v_map is not None:
             finite &= np.isfinite(v_map)
-        reason = "finite_uv"
+        reason = "finite_u" if v_map is None else "finite_uv"
 
         if self.quality_enabled and quality_map is not None:
             q = np.asarray(quality_map, dtype=np.float64)
@@ -174,8 +181,10 @@ class CrackPhysicsEngine:
                 threshold = float(self.quality_threshold)
                 if self.quality_mode == "lower_is_better":
                     q_mask &= q <= threshold
-                else:
+                elif self.quality_mode in {"higher_is_better", "finite_only"}:
                     q_mask &= q >= threshold
+                else:
+                    logger.warning("Unknown quality.metric_mode=%s; falling back to finite quality values.", self.quality_mode)
                 reason = f"quality_{self.quality_mode}_{threshold:g}"
             else:
                 reason = "quality_finite_only"
@@ -206,6 +215,8 @@ class CrackPhysicsEngine:
         return morphology.skeletonize(cleaned), threshold
 
     def _sampling_points(self, dic_point_spacing_mm: float) -> tuple[int, int]:
+        if not np.isfinite(dic_point_spacing_mm) or dic_point_spacing_mm <= 0:
+            raise ValueError("dic_point_spacing_mm must be finite and greater than zero.")
         delta_points = self.delta_points
         max_search_points = self.max_search_points
         if self.delta_mm is not None:
@@ -225,10 +236,14 @@ class CrackPhysicsEngine:
     ) -> Dict[str, Any]:
         labels = measure.label(skeleton, connectivity=2)
         y_c, x_c = np.where(skeleton)
+        delta_points, max_search_points = self._sampling_points(dic_point_spacing_mm)
         if len(y_c) == 0:
-            return self._empty("no_skeleton")
+            return self._empty("no_skeleton", delta_points, max_search_points)
 
         has_v = v_map is not None
+        if self.require_v and not has_v:
+            return self._empty("missing_v_map_required", delta_points, max_search_points)
+
         v_data = np.ascontiguousarray(v_map) if has_v else np.zeros_like(u_map)
         if sample_mask is None:
             sample_mask_data = np.isfinite(u_map)
@@ -239,7 +254,6 @@ class CrackPhysicsEngine:
             if has_v:
                 sample_mask_data &= np.isfinite(v_map)
         sample_mask_float = np.ascontiguousarray(sample_mask_data.astype(np.float64))
-        delta_points, max_search_points = self._sampling_points(dic_point_spacing_mm)
 
         widths, valid_idx = _fast_cod_kernel(
             np.ascontiguousarray(y_c),
@@ -255,7 +269,7 @@ class CrackPhysicsEngine:
             displacement_scale_mm,
         )
         if widths.size < 3:
-            return self._empty("insufficient_cod_samples")
+            return self._empty("insufficient_cod_samples", delta_points, max_search_points)
 
         finite = np.isfinite(widths)
         widths = widths[finite]
@@ -264,7 +278,7 @@ class CrackPhysicsEngine:
         widths = widths[physical]
         valid_idx = valid_idx[physical]
         if widths.size < 3:
-            return self._empty("cod_out_of_range")
+            return self._empty("cod_out_of_range", delta_points, max_search_points)
 
         df = pd.DataFrame({"Crack_ID": labels[y_c, x_c][valid_idx], "W": widths})
         summary = df.groupby("Crack_ID")["W"].agg(["mean", "max", "count"]).reset_index()
@@ -279,7 +293,7 @@ class CrackPhysicsEngine:
         ]
 
         if summary.empty:
-            return self._empty("object_filter_removed_all")
+            return self._empty("object_filter_removed_all", delta_points, max_search_points)
 
         valid_ids = summary["Crack_ID"].to_numpy()
         raw = df[df["Crack_ID"].isin(valid_ids)]["W"].to_numpy()
@@ -300,7 +314,12 @@ class CrackPhysicsEngine:
             "max_search_points": int(max_search_points),
         }
 
-    def _empty(self, status: str = "empty") -> Dict[str, Any]:
+    def _empty(
+        self,
+        status: str = "empty",
+        delta_points: int | None = None,
+        max_search_points: int | None = None,
+    ) -> Dict[str, Any]:
         return {
             "crack_count": 0,
             "w_avg": 0.0,
@@ -311,8 +330,8 @@ class CrackPhysicsEngine:
             "cod_sample_count": 0,
             "cod_vector_mode": "none",
             "cod_status": status,
-            "delta_points": int(self.delta_points),
-            "max_search_points": int(self.max_search_points),
+            "delta_points": int(self.delta_points if delta_points is None else delta_points),
+            "max_search_points": int(self.max_search_points if max_search_points is None else max_search_points),
         }
 
 
