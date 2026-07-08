@@ -59,22 +59,37 @@ class ImageCrackMaskProvider:
         if not self.enabled or not self.files:
             return None
 
+        offset_frame_id = frame_id + self.frame_index_offset
+
         if self.filename_pattern:
+            # Offset is the user's explicit correction. Try it first; raw frame_id is only fallback.
             candidates = []
-            for frame_value in (frame_id, frame_id + self.frame_index_offset):
+            for frame_value in (offset_frame_id, frame_id):
                 try:
-                    candidates.append(self.image_dir / self.filename_pattern.format(frame=frame_value, frame_id=frame_value))
+                    candidate = self.image_dir / self.filename_pattern.format(frame=frame_value, frame_id=frame_value)
+                    if candidate not in candidates:
+                        candidates.append(candidate)
                 except Exception:
                     pass
             for candidate in candidates:
                 if candidate.exists():
                     return candidate
 
-        idx = frame_id + self.frame_index_offset
-        if 0 <= idx < len(self.files):
-            return self.files[idx]
+        if 0 <= offset_frame_id < len(self.files):
+            return self.files[offset_frame_id]
+        if offset_frame_id != frame_id and 0 <= frame_id < len(self.files):
+            return self.files[frame_id]
 
-        frame_texts = {str(frame_id), f"{frame_id:03d}", f"{frame_id:04d}", f"{frame_id:05d}"}
+        frame_texts = {
+            str(offset_frame_id),
+            f"{offset_frame_id:03d}",
+            f"{offset_frame_id:04d}",
+            f"{offset_frame_id:05d}",
+            str(frame_id),
+            f"{frame_id:03d}",
+            f"{frame_id:04d}",
+            f"{frame_id:05d}",
+        }
         for f in self.files:
             stem = f.stem
             if any(token in stem for token in frame_texts):
