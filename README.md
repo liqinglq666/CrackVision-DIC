@@ -15,6 +15,8 @@ ECC / SHCC 拉伸试验最麻烦的不是拿到 DIC 数据，而是把 `.mat`、
 
 不是最花哨的路线，但够硬。实验数据不需要魔法，需要账本。
 
+> GitHub README 的数学渲染不是完整 LaTeX。这里的公式全部用 GitHub 友好的写法，避免 `operatorname` 这类会被拦截的宏。
+
 ## 这套方法想解决什么
 
 Ncorr / DICe / VIC-2D 已经能给出位移场和应变场，但论文里通常还要这些东西：
@@ -194,7 +196,7 @@ Experiment_Root/
 DIC 输出的位移通常以 raw image pixel 为单位；裂缝长度、搜索距离、骨架步长则发生在 DIC subset grid 上。这两个尺度必须分开。
 
 $$
-\Delta x_{DIC}=s_{px}\,p_{mm}
+\Delta x_{DIC}=s_{px}p_{mm}
 $$
 
 其中：
@@ -223,17 +225,19 @@ DIC 的 `exx` 高值区适合找裂缝位置，但不能直接把高应变带宽
 这里用稳健阈值找候选裂缝区：
 
 $$
-\varepsilon_{th}=\operatorname{median}(\varepsilon_{xx})+k\cdot1.4826\cdot\operatorname{MAD}(\varepsilon_{xx})
+\varepsilon_{th}=\mathrm{median}(\varepsilon_{xx})+k \cdot 1.4826 \cdot \mathrm{MAD}(\varepsilon_{xx})
 $$
 
+候选区域写成：
+
 $$
-\Omega_s=\{(x,y)\mid \varepsilon_{xx}(x,y)>\varepsilon_{th}\}
+\Omega_s=\{(x,y):\varepsilon_{xx}(x,y)>\varepsilon_{th}\}
 $$
 
 再可选融合相机裂缝 mask：
 
 $$
-\Omega_c = \Omega_s \cup \Omega_i
+\Omega_c=\Omega_s \cup \Omega_i
 $$
 
 默认 `strain_or_image`，因为 ECC 细裂缝有时候在图像里清楚、在 DIC 应变里被平滑掉；反过来，也有裂缝在照片里被喷斑和光照淹掉。两个传感源互相兜底，别装清高。
@@ -252,29 +256,28 @@ strain_only           # 只用 DIC 高应变区；适合不信任图像 mask 的
 
 裂缝宽度不应该从 `exx` 带宽直接读。主结果来自裂缝两侧位移场的法向跳量。
 
-对骨架点 $\mathbf{x}_c$，局部法向为 $\mathbf{n}=(n_x,n_y)$，两侧采样点为：
+对骨架点 `x_c`，局部法向为 `n = (n_x, n_y)`，两侧采样点为：
 
 $$
-\mathbf{x}^{+}=\mathbf{x}_c+d\mathbf{n},\qquad
-\mathbf{x}^{-}=\mathbf{x}_c-d\mathbf{n}
+x^+=x_c+dn, \quad x^-=x_c-dn
 $$
 
 裂缝开口位移：
 
 $$
-w(\mathbf{x}_c)=\left|\left[\mathbf{u}(\mathbf{x}^{+})-\mathbf{u}(\mathbf{x}^{-})\right]\cdot\mathbf{n}\right|\,p_{mm}
+w(x_c)=\left|\left[u(x^+)-u(x^-)\right] \cdot n\right|p_{mm}
 $$
 
 展开就是代码里的公式：
 
 $$
-w=\left| (u^+-u^-)n_x+(v^+-v^-)n_y \right|p_{mm}
+w=\left|(u^+-u^-)n_x+(v^+-v^-)n_y\right|p_{mm}
 $$
 
 如果没有 `v`，只能退化成：
 
 $$
-w\approx |(u^+-u^-)n_x|p_{mm}
+w\approx\left|(u^+-u^-)n_x\right|p_{mm}
 $$
 
 这能跑，但不够漂亮。斜裂缝会被低估。所以默认：
@@ -297,22 +300,21 @@ missing_v_map_required
 每条裂缝会有一组采样宽度：
 
 $$
-\mathcal{W}_i=\{w_{i,1}, w_{i,2},...,w_{i,m}\}
+W_i=\{w_{i,1},w_{i,2},...,w_{i,m}\}
 $$
 
 导出：
 
 $$
-\tilde{w}_i=\operatorname{median}(\mathcal{W}_i)
+w_{i,median}=\mathrm{median}(W_i)
 $$
 
 $$
-\bar{w}_i=\frac{1}{m}\sum_{j=1}^{m}w_{i,j}
+w_{i,avg}=\frac{1}{m}\sum_{j=1}^{m}w_{i,j}
 $$
 
 $$
-w_{i,95}=Q_{0.95}(\mathcal{W}_i),\qquad
-w_{i,max}=\max(\mathcal{W}_i)
+w_{i,95}=Q_{0.95}(W_i), \quad w_{i,max}=\max(W_i)
 $$
 
 `max` 保留，但不供奉。DIC 在裂缝边缘很容易有局部噪点，最大值太容易戏剧化。论文里我更建议报告：
@@ -343,13 +345,13 @@ W_image_area_skeleton_um
 
 ### 6. 全局估算宽度：粗糙但很适合抓 bug
 
-如果当前裂缝数量为 $N_c$，virtual gauge length 为 $L_v$，平均裂缝间距：
+如果当前裂缝数量为 `N_c`，virtual gauge length 为 `L_v`，平均裂缝间距：
 
 $$
 \bar{s}=\frac{L_v}{N_c}
 $$
 
-若填入弹性模量 $E$，裂缝贡献应变估算为：
+若填入弹性模量 `E`，裂缝贡献应变估算为：
 
 $$
 \varepsilon_{cr}=\max\left(0,\varepsilon_{global}-\frac{\sigma}{E}\right)
@@ -388,7 +390,7 @@ DIC 每帧时间：
 MTS 插值到 DIC 时间轴：
 
 $$
-\sigma(t_{DIC})=\operatorname{interp}\left(\sigma_{MTS}(t),t_{DIC}\right)
+\sigma(t_{DIC})=\mathrm{interp}(\sigma_{MTS}(t),t_{DIC})
 $$
 
 重叠不足、缺失比例过高，就拒绝同步，并写入：
@@ -645,11 +647,11 @@ Crack locations were first identified from a fused crack candidate field constru
 核心公式放这几个就够：
 
 $$
-\varepsilon_{th}=\operatorname{median}(\varepsilon_{xx})+k\cdot1.4826\cdot\operatorname{MAD}(\varepsilon_{xx})
+\varepsilon_{th}=\mathrm{median}(\varepsilon_{xx})+k \cdot 1.4826 \cdot \mathrm{MAD}(\varepsilon_{xx})
 $$
 
 $$
-w=\left| (u^+-u^-)n_x+(v^+-v^-)n_y \right|p_{mm}
+w=\left|(u^+-u^-)n_x+(v^+-v^-)n_y\right|p_{mm}
 $$
 
 $$
