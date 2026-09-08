@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -27,26 +26,23 @@ WHITE = "FFFFFF"
 BORDER = Side(style="thin", color="D9E1F2")
 
 
-def prepare_frame_summary(rows: Iterable[dict]) -> pd.DataFrame:
-    """Build the single selected-frame table and add only paper-facing μm fields."""
-    df = pd.DataFrame(list(rows))
-    if df.empty:
-        return df
+def prepare_frame_summary(summary: dict) -> pd.DataFrame:
+    """Build the one-row selected-frame table and add paper-facing μm fields."""
+    df = pd.DataFrame([summary])
     for col in FRAME_WIDTH_COLUMNS_MM:
         if col not in df.columns:
             df[col] = np.nan
         df[col.replace("_mm", "_um")] = pd.to_numeric(df[col], errors="coerce") * 1000.0
-    return df.sort_values("Frame").reset_index(drop=True)
+    return df
 
 
-def prepare_crack_details(tables: Iterable[pd.DataFrame]) -> pd.DataFrame:
+def prepare_crack_details(details: pd.DataFrame) -> pd.DataFrame:
     """Return only the five crack-level fields used by the workbook."""
-    valid = [table for table in tables if table is not None and not table.empty]
     columns = ["Crack_ID", "Length_mm", "W_median_um", "COD_samples", "Fit_R2_median"]
-    if not valid:
+    if details.empty:
         return pd.DataFrame(columns=columns)
 
-    df = pd.concat(valid, ignore_index=True)
+    df = details.copy()
     df["W_median_um"] = pd.to_numeric(df["W_median_mm"], errors="coerce") * 1000.0
     for col in columns:
         if col not in df.columns:
@@ -135,7 +131,7 @@ def _write_summary_sheet(
     for col in "ABCDEFGH":
         ws.column_dimensions[col].width = 17
 
-    if crack_df is not None and not crack_df.empty:
+    if not crack_df.empty:
         details_ws = wb["02_裂缝明细"]
         if details_ws.max_row >= 2:
             chart = BarChart()
@@ -163,7 +159,7 @@ def _write_crack_detail_sheet(wb: Workbook, crack_df: pd.DataFrame) -> None:
     headers = ["裂缝编号", "裂缝长度 (mm)", "代表宽度 (μm)", "COD 有效点数", "拟合 R² 中位数"]
     ws.append(headers)
 
-    if crack_df is not None and not crack_df.empty:
+    if not crack_df.empty:
         for _, row in crack_df.sort_values("Crack_ID").iterrows():
             ws.append(
                 [
@@ -203,7 +199,6 @@ def _write_crack_detail_sheet(wb: Workbook, crack_df: pd.DataFrame) -> None:
             showColumnStripes=False,
         )
         ws.add_table(table)
-        ws.auto_filter.ref = f"A1:E{ws.max_row}"
 
     ws.freeze_panes = "A2"
 
@@ -256,7 +251,7 @@ def _write_qa_sheet(wb: Workbook, frame_df: pd.DataFrame) -> None:
 
 
 def export_workbook(path: Path, frame_df: pd.DataFrame, crack_df: pd.DataFrame) -> None:
-    """Export only the paper summary, per-crack widths and essential QA."""
+    """Export the peak-frame summary, per-crack widths and essential QA."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
