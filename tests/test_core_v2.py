@@ -93,7 +93,6 @@ def test_vertical_crack_uses_horizontal_displacement_jump():
 
 
 def test_regression_removes_continuous_background_gradient():
-    # 0.04 px/index continuous deformation is present on both sides; the true discontinuity remains 2 px.
     summary, _ = engine().analyze_frame(make_frame(horizontal=True, jump_px=2.0, slope_px_per_index=0.04))
     assert summary["cod_status"] == "ok"
     assert np.isclose(summary["W_median_mm"], 0.10, atol=3e-3)
@@ -106,16 +105,14 @@ def test_native_ncorr_spacing_uses_plus_one_step():
 
 def test_failed_cod_remains_nan_in_export_table():
     df = prepare_frame_summary(
-        [
-            {
-                "Frame": 0,
-                "cod_status": "insufficient_cod_samples",
-                "Crack_width_mean_mm": np.nan,
-                "Crack_width_median_mm": np.nan,
-                "Crack_width_95_mm": np.nan,
-                "Crack_width_max_mm": np.nan,
-            }
-        ]
+        {
+            "Frame": 0,
+            "cod_status": "insufficient_cod_samples",
+            "Crack_width_mean_mm": np.nan,
+            "Crack_width_median_mm": np.nan,
+            "Crack_width_95_mm": np.nan,
+            "Crack_width_max_mm": np.nan,
+        }
     )
     assert np.isnan(df.loc[0, "Crack_width_mean_um"])
     assert np.isnan(df.loc[0, "Crack_width_max_um"])
