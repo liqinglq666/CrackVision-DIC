@@ -17,7 +17,6 @@ from .physics import CrackPhysicsEngine
 class PeakFrameSelection:
     mts_peak_force_N: float
     mts_peak_time_s: float
-    mts_tension_sign: int
     selected_frame_id: int
     selected_dic_time_s: float
     match_error_s: float
@@ -42,11 +41,8 @@ def apply_equal_weight_crack_summary(
     summary: dict[str, Any],
     details: pd.DataFrame,
 ) -> dict[str, Any]:
-    """Summarize accepted cracks with one equal-weight width per crack."""
+    """Summarize accepted cracks with one equal-weight representative width each."""
     out = dict(summary)
-    out["crack_width_basis"] = "equal_weight_per_crack_W_median"
-    out["crack_representative_count"] = 0
-
     for field in (
         "Crack_width_mean_mm",
         "Crack_width_median_mm",
@@ -63,24 +59,12 @@ def apply_equal_weight_crack_summary(
     if widths.size == 0:
         return out
 
-    mean_width = float(np.mean(widths))
-    median_width = float(np.median(widths))
-    p95_width = float(np.percentile(widths, 95))
-    max_width = float(np.max(widths))
-
     out.update(
         {
-            "crack_representative_count": int(widths.size),
-            "Crack_width_mean_mm": mean_width,
-            "Crack_width_median_mm": median_width,
-            "Crack_width_95_mm": p95_width,
-            "Crack_width_max_mm": max_width,
-            # Internal compatibility aliases. The workbook exposes only the
-            # explicit paper-facing Crack_width_* fields.
-            "W_avg_mm": mean_width,
-            "W_median_mm": median_width,
-            "W_95_mm": p95_width,
-            "W_max_mm": max_width,
+            "Crack_width_mean_mm": float(np.mean(widths)),
+            "Crack_width_median_mm": float(np.median(widths)),
+            "Crack_width_95_mm": float(np.percentile(widths, 95)),
+            "Crack_width_max_mm": float(np.max(widths)),
         }
     )
     return out
@@ -93,14 +77,12 @@ def analyze_peak_frame(
 ) -> AnalysisResult:
     """Analyse only the DIC frame nearest to the MTS peak tensile-force time.
 
-    The project workflow assumes MTS and image acquisition start together, so
-    both time axes share t=0 and no user-entered synchronization offset exists.
+    MTS recording and image acquisition are assumed to start together, so both
+    time axes share t=0 and no synchronization offset is exposed to the user.
     """
     mts_peak: MtsPeak = read_mts_peak(Path(mts_csv_path))
-    target_dic_time_s = float(mts_peak.peak_time_s)
-
     selected: SelectedFrame = select_nearest_frame(
-        Path(data_path), config, target_dic_time_s
+        Path(data_path), config, float(mts_peak.peak_time_s)
     )
 
     engine = CrackPhysicsEngine(config)
@@ -111,7 +93,6 @@ def analyze_peak_frame(
     selection = PeakFrameSelection(
         mts_peak_force_N=float(mts_peak.peak_force_N),
         mts_peak_time_s=float(mts_peak.peak_time_s),
-        mts_tension_sign=int(mts_peak.tension_sign),
         selected_frame_id=int(selected.frame.frame_id),
         selected_dic_time_s=float(selected.dic_time_s),
         match_error_s=match_error_s,
@@ -121,10 +102,8 @@ def analyze_peak_frame(
         {
             "Time_s": float(selected.dic_time_s),
             "time_source": selected.time_source,
-            "selection_mode": "nearest_dic_frame_to_mts_peak_tensile_force",
             "MTS_peak_force_N": float(mts_peak.peak_force_N),
             "MTS_peak_time_s": float(mts_peak.peak_time_s),
-            "MTS_tension_sign": int(mts_peak.tension_sign),
             "DIC_selected_time_s": float(selected.dic_time_s),
             "frame_match_error_s": match_error_s,
         }
