@@ -93,7 +93,9 @@ def test_vertical_crack_uses_horizontal_displacement_jump():
 
 
 def test_regression_removes_continuous_background_gradient():
-    summary, _ = engine().analyze_frame(make_frame(horizontal=True, jump_px=2.0, slope_px_per_index=0.04))
+    summary, _ = engine().analyze_frame(
+        make_frame(horizontal=True, jump_px=2.0, slope_px_per_index=0.04)
+    )
     assert summary["cod_status"] == "ok"
     assert np.isclose(summary["W_median_mm"], 0.10, atol=3e-3)
 
@@ -118,7 +120,7 @@ def test_failed_cod_remains_nan_in_export_table():
     assert np.isnan(df.loc[0, "Crack_width_max_um"])
 
 
-def test_classic_ncorr_mat_loader_reads_full_tensor_and_scale(tmp_path):
+def test_classic_ncorr_mat_prefers_reference_formatted_displacement_and_converts_mm_to_px(tmp_path):
     from scipy.io import savemat
 
     shape = (11, 13)
@@ -131,8 +133,12 @@ def test_classic_ncorr_mat_loader_reads_full_tensor_and_scale(tmp_path):
             "plot_exy_ref_formatted": np.zeros(shape),
         }
         displacements[i] = {
-            "plot_u_dic": np.ones(shape) * i,
-            "plot_v_dic": np.ones(shape) * 2 * i,
+            # Correct reference-formatted values in mm.
+            "plot_u_ref_formatted": np.ones(shape) * 0.05 * i,
+            "plot_v_ref_formatted": np.ones(shape) * 0.10 * i,
+            # Deliberately wrong raw values: loader must not prefer these.
+            "plot_u_dic": np.ones(shape) * 99.0,
+            "plot_v_dic": np.ones(shape) * 199.0,
         }
 
     mat_path = tmp_path / "synthetic_ncorr.mat"
@@ -159,12 +165,12 @@ def test_classic_ncorr_mat_loader_reads_full_tensor_and_scale(tmp_path):
     assert np.isclose(frames[0].pixel_size_mm, 0.05)
     assert np.isclose(frames[0].dic_step_px, 3.0)
     assert np.isclose(frames[0].dic_point_spacing_mm, 0.15)
-    assert frames[0].metadata_source == "mat_pixtounits;mat_ncorr_spacing_plus_one"
+    assert "ref_formatted_mm_to_pixel" in frames[0].metadata_source
     assert np.isclose(frames[1].u_map[0, 0], 1.0)
     assert np.isclose(frames[1].v_map[0, 0], 2.0)
 
 
-def test_hdf5_ncorr_loader_reads_reference_layout(tmp_path):
+def test_hdf5_ncorr_mat_reference_formatted_displacement_converts_mm_to_px(tmp_path):
     import h5py
 
     mat_path = tmp_path / "synthetic_ncorr_v73.mat"
@@ -184,8 +190,8 @@ def test_hdf5_ncorr_loader_reads_reference_layout(tmp_path):
                 "exx": np.ones(shape) * 0.001 * i,
                 "eyy": np.ones(shape) * 0.002 * i,
                 "exy": np.zeros(shape),
-                "u": np.ones(shape) * i,
-                "v": np.ones(shape) * 2 * i,
+                "u": np.ones(shape) * 0.05 * i,
+                "v": np.ones(shape) * 0.10 * i,
             }
             for name, arr in values.items():
                 ds = f.create_dataset(f"_data/{name}_{i}", data=arr.T)
@@ -195,8 +201,8 @@ def test_hdf5_ncorr_loader_reads_reference_layout(tmp_path):
             "exx": "plot_exx_ref_formatted",
             "eyy": "plot_eyy_ref_formatted",
             "exy": "plot_exy_ref_formatted",
-            "u": "plot_u_dic",
-            "v": "plot_v_dic",
+            "u": "plot_u_ref_formatted",
+            "v": "plot_v_ref_formatted",
         }
         for name, field in field_names.items():
             group = strains if name in {"exx", "eyy", "exy"} else displacements
@@ -214,5 +220,6 @@ def test_hdf5_ncorr_loader_reads_reference_layout(tmp_path):
     assert frames[0].u_map.shape == shape
     assert np.isclose(frames[0].pixel_size_mm, 0.05)
     assert np.isclose(frames[0].dic_point_spacing_mm, 0.15)
+    assert "ref_formatted_mm_to_pixel" in frames[0].metadata_source
     assert np.isclose(frames[1].u_map[0, 0], 1.0)
     assert np.isclose(frames[1].v_map[0, 0], 2.0)
