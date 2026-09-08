@@ -26,7 +26,7 @@ def main() -> int:
     configure_logging()
     app = QApplication(sys.argv)
     app.setApplicationName("CrackVision-DIC")
-    app.setApplicationVersion("3.0.0")
+    app.setApplicationVersion("4.0.0")
     window = MainWindow()
     window.show()
     return app.exec()
