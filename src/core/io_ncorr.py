@@ -25,7 +25,7 @@ class NcorrMetadata:
 class NcorrLoader:
     """Load the Ncorr fields required for coordinate-invariant crack-width analysis.
 
-    Required fields per frame: u, v, exx, eyy and exy. Missing transverse or shear
+    Required fields per frame: u, v, exx, eyy and exy.  Missing transverse or shear
     strain is treated as a data-contract error instead of silently falling back to Exx.
     """
 
@@ -107,18 +107,30 @@ class NcorrLoader:
 
     @staticmethod
     def spacing_to_step_px(raw_spacing: float, *, ncorr_spacing_is_gap_count: bool = True) -> float:
-        """Convert Ncorr's stored spacing to the actual centre-to-centre DIC step."""
+        """Convert Ncorr's stored spacing to the actual centre-to-centre DIC step.
+
+        Ncorr's native ``spacing`` is commonly the number of skipped pixels between
+        neighbouring subset centres, so the centre step is ``spacing + 1`` pixels.
+        The behaviour is configurable for imported/non-native files.
+        """
         raw_spacing = float(raw_spacing)
         if raw_spacing < 0 or not np.isfinite(raw_spacing):
             raise ValueError("Ncorr spacing must be finite and >= 0")
         return raw_spacing + 1.0 if ncorr_spacing_is_gap_count else raw_spacing
 
     @classmethod
-    def _metadata_from_values(cls, ratio_from_mat: Optional[float], spacing_from_mat: Optional[float], fallback_ratio: float, config: Optional[dict]) -> NcorrMetadata:
+    def _metadata_from_values(
+        cls,
+        ratio_from_mat: Optional[float],
+        spacing_from_mat: Optional[float],
+        fallback_ratio: float,
+        config: Optional[dict],
+    ) -> NcorrMetadata:
         exp = (config or {}).get("experiment", {})
         pixel_size = float(ratio_from_mat if ratio_from_mat is not None else fallback_ratio)
         if pixel_size <= 0:
             raise ValueError("mm_per_pixel fallback must be > 0")
+
         if spacing_from_mat is not None:
             native = bool(exp.get("ncorr_spacing_is_gap_count", True))
             step_px = cls.spacing_to_step_px(spacing_from_mat, ncorr_spacing_is_gap_count=native)
@@ -130,26 +142,50 @@ class NcorrLoader:
                 raise ValueError("experiment.dic_step_px must be > 0")
             spacing_source = "config_dic_step_px"
             raw_spacing = None
+
         ratio_source = "mat_pixtounits" if ratio_from_mat is not None else "config_mm_per_pixel"
-        return NcorrMetadata(pixel_size, step_px, pixel_size * step_px, f"{ratio_source};{spacing_source}", raw_spacing)
+        return NcorrMetadata(
+            pixel_size_mm=pixel_size,
+            dic_step_px=step_px,
+            dic_point_spacing_mm=pixel_size * step_px,
+            source=f"{ratio_source};{spacing_source}",
+            ncorr_spacing_raw=raw_spacing,
+        )
 
     @classmethod
-    def stream_frames(cls, mat_path: Path, fallback_ratio: float, config: Optional[dict] = None) -> Generator[FrameData, None, None]:
+    def stream_frames(
+        cls, mat_path: Path, fallback_ratio: float, config: Optional[dict] = None
+    ) -> Generator[FrameData, None, None]:
         mat_path = Path(mat_path)
         if not mat_path.exists():
             raise FileNotFoundError(mat_path)
+
         try:
             loadmat(str(mat_path), struct_as_record=False, squeeze_me=True, variable_names=["__probe__"])
             yield from cls._stream_scipy(mat_path, fallback_ratio, config)
         except NotImplementedError:
             yield from cls._stream_hdf5(mat_path, fallback_ratio, config)
+        except ValueError:
+            # Some MATLAB v7.3/HDF5 files are reported by scipy as an unknown MAT
+            # version instead of raising NotImplementedError. Detect HDF5 explicitly.
+            try:
+                import h5py
+            except ImportError:
+                raise
+            if h5py.is_hdf5(str(mat_path)):
+                yield from cls._stream_hdf5(mat_path, fallback_ratio, config)
+            else:
+                raise
 
     @classmethod
-    def _stream_scipy(cls, mat_path: Path, fallback_ratio: float, config: Optional[dict]) -> Generator[FrameData, None, None]:
+    def _stream_scipy(
+        cls, mat_path: Path, fallback_ratio: float, config: Optional[dict]
+    ) -> Generator[FrameData, None, None]:
         mat = loadmat(str(mat_path), struct_as_record=False, squeeze_me=True)
         data = mat.get("data_dic_save")
         if data is None:
             raise KeyError("MAT file does not contain data_dic_save")
+
         strains = getattr(data, "strains", None)
         displacements = getattr(data, "displacements", None)
         if strains is None or displacements is None:
@@ -179,6 +215,7 @@ class NcorrLoader:
             missing = [name for name, key in (("u", u_key), ("v", v_key), ("exx", exx_key), ("eyy", eyy_key), ("exy", exy_key)) if not key]
             if missing:
                 raise KeyError(f"Frame {frame_id} missing required Ncorr fields: {', '.join(missing)}")
+
             u = np.asarray(getattr(d_item, u_key), dtype=np.float64)
             v = np.asarray(getattr(d_item, v_key), dtype=np.float64)
             exx = np.asarray(getattr(s_item, exx_key), dtype=np.float64)
@@ -186,12 +223,28 @@ class NcorrLoader:
             exy = np.asarray(getattr(s_item, exy_key), dtype=np.float64)
             cls._validate_shapes(frame_id, u, v, exx, eyy, exy)
             mask = np.isfinite(u) & np.isfinite(v) & np.isfinite(exx) & np.isfinite(eyy) & np.isfinite(exy)
+
             time_s = float("nan")
             for item in (d_item, s_item):
                 time_s = cls._read_obj_time(item)
                 if np.isfinite(time_s):
                     break
-            yield FrameData(frame_id, u, v, exx, eyy, exy, mask, meta.pixel_size_mm, meta.dic_point_spacing_mm, time_s, meta.source, meta.ncorr_spacing_raw, meta.dic_step_px)
+
+            yield FrameData(
+                frame_id=frame_id,
+                u_map=u,
+                v_map=v,
+                exx_map=exx,
+                eyy_map=eyy,
+                exy_map=exy,
+                mask=mask,
+                pixel_size_mm=meta.pixel_size_mm,
+                dic_point_spacing_mm=meta.dic_point_spacing_mm,
+                time_s=time_s,
+                metadata_source=meta.source,
+                ncorr_spacing_raw=meta.ncorr_spacing_raw,
+                dic_step_px=meta.dic_step_px,
+            )
 
     @classmethod
     def _read_obj_time(cls, obj: Any) -> float:
@@ -215,20 +268,26 @@ class NcorrLoader:
             raise ValueError(f"Frame {frame_id} DIC fields must be same-shape 2D matrices; shapes={shapes}")
 
     @classmethod
-    def _stream_hdf5(cls, mat_path: Path, fallback_ratio: float, config: Optional[dict]) -> Generator[FrameData, None, None]:
+    def _stream_hdf5(
+        cls, mat_path: Path, fallback_ratio: float, config: Optional[dict]
+    ) -> Generator[FrameData, None, None]:
         try:
             import h5py
         except ImportError as exc:
             raise ImportError("MATLAB v7.3 files require h5py") from exc
+
         with h5py.File(str(mat_path), "r") as f:
             if "data_dic_save" not in f:
                 raise KeyError("HDF5 MAT file does not contain data_dic_save")
+
             def deref(node: Any) -> Any:
                 while isinstance(node, h5py.Dataset) and node.dtype.kind == "O" and node.size == 1:
                     node = f[node[:].flat[0]]
                 return node
+
             def read_matrix(node: Any) -> np.ndarray:
                 return np.asarray(deref(node)[:], dtype=np.float64).T
+
             def read_group_number(group: Any, names: tuple[str, ...], *, allow_zero: bool = False) -> Optional[float]:
                 if group is None or not hasattr(group, "keys"):
                     return None
@@ -245,6 +304,7 @@ class NcorrLoader:
                         except Exception:
                             pass
                 return None
+
             data = deref(f["data_dic_save"])
             dispinfo = deref(data["dispinfo"]) if "dispinfo" in data else None
             straininfo = deref(data["straininfo"]) if "straininfo" in data else None
@@ -253,44 +313,94 @@ class NcorrLoader:
             if spacing is None:
                 spacing = read_group_number(straininfo, cls.SPACING_KEYS, allow_zero=True)
             meta = cls._metadata_from_values(ratio, spacing, fallback_ratio, config)
+
             strains_node = deref(data["strains"])
             disp_node = deref(data["displacements"])
+
+            # Common v7.3 Ncorr layout: structs contain datasets of object references, one ref per frame.
             if isinstance(strains_node, h5py.Group) and isinstance(disp_node, h5py.Group):
-                keys = cls._resolve_required_keys(list(strains_node.keys()), list(disp_node.keys()))
+                s_keys = list(strains_node.keys())
+                d_keys = list(disp_node.keys())
+                keys = cls._resolve_required_keys(s_keys, d_keys)
                 exx_ds, eyy_ds, exy_ds = (strains_node[keys[k]] for k in ("exx", "eyy", "exy"))
                 u_ds, v_ds = disp_node[keys["u"]], disp_node[keys["v"]]
+
                 if all(isinstance(ds, h5py.Dataset) and ds.dtype.kind == "O" for ds in (exx_ds, eyy_ds, exy_ds, u_ds, v_ds)):
                     refs = {name: ds[:].flatten() for name, ds in (("exx", exx_ds), ("eyy", eyy_ds), ("exy", exy_ds), ("u", u_ds), ("v", v_ds))}
                     counts = {len(values) for values in refs.values()}
                     if len(counts) != 1:
                         raise ValueError(f"HDF5 frame count mismatch: {[len(v) for v in refs.values()]}")
                     for frame_id in range(len(refs["u"])):
-                        yield cls._make_frame(frame_id, read_matrix(f[refs["u"][frame_id]]), read_matrix(f[refs["v"][frame_id]]), read_matrix(f[refs["exx"][frame_id]]), read_matrix(f[refs["eyy"][frame_id]]), read_matrix(f[refs["exy"][frame_id]]), meta)
+                        u = read_matrix(f[refs["u"][frame_id]])
+                        v = read_matrix(f[refs["v"][frame_id]])
+                        exx = read_matrix(f[refs["exx"][frame_id]])
+                        eyy = read_matrix(f[refs["eyy"][frame_id]])
+                        exy = read_matrix(f[refs["exy"][frame_id]])
+                        yield cls._make_frame(frame_id, u, v, exx, eyy, exy, meta)
                 else:
                     yield cls._make_frame(0, read_matrix(u_ds), read_matrix(v_ds), read_matrix(exx_ds), read_matrix(eyy_ds), read_matrix(exy_ds), meta)
                 return
+
             if isinstance(strains_node, h5py.Dataset) and strains_node.dtype.kind == "O":
                 s_refs = strains_node[:].flatten()
                 d_refs = disp_node[:].flatten()
                 if len(s_refs) != len(d_refs):
                     raise ValueError("HDF5 strains/displacements frame count mismatch")
                 for frame_id, (s_ref, d_ref) in enumerate(zip(s_refs, d_refs)):
-                    s_group = deref(f[s_ref]); d_group = deref(f[d_ref])
+                    s_group = deref(f[s_ref])
+                    d_group = deref(f[d_ref])
                     keys = cls._resolve_required_keys(list(s_group.keys()), list(d_group.keys()))
-                    yield cls._make_frame(frame_id, read_matrix(d_group[keys["u"]]), read_matrix(d_group[keys["v"]]), read_matrix(s_group[keys["exx"]]), read_matrix(s_group[keys["eyy"]]), read_matrix(s_group[keys["exy"]]), meta)
+                    yield cls._make_frame(
+                        frame_id,
+                        read_matrix(d_group[keys["u"]]),
+                        read_matrix(d_group[keys["v"]]),
+                        read_matrix(s_group[keys["exx"]]),
+                        read_matrix(s_group[keys["eyy"]]),
+                        read_matrix(s_group[keys["exy"]]),
+                        meta,
+                    )
                 return
+
             raise ValueError(f"Unsupported HDF5 Ncorr structure: strains={type(strains_node)}, displacements={type(disp_node)}")
 
     @classmethod
     def _resolve_required_keys(cls, strain_keys: list[str], disp_keys: list[str]) -> dict[str, str]:
-        out = {"u": cls._pick_field(disp_keys, cls.U_KEYS, ("plot_u", "disp_u")), "v": cls._pick_field(disp_keys, cls.V_KEYS, ("plot_v", "disp_v")), "exx": cls._pick_field(strain_keys, cls.EXX_KEYS, ("exx",)), "eyy": cls._pick_field(strain_keys, cls.EYY_KEYS, ("eyy",)), "exy": cls._pick_field(strain_keys, cls.EXY_KEYS, ("exy",))}
+        out = {
+            "u": cls._pick_field(disp_keys, cls.U_KEYS, ("plot_u", "disp_u")),
+            "v": cls._pick_field(disp_keys, cls.V_KEYS, ("plot_v", "disp_v")),
+            "exx": cls._pick_field(strain_keys, cls.EXX_KEYS, ("exx",)),
+            "eyy": cls._pick_field(strain_keys, cls.EYY_KEYS, ("eyy",)),
+            "exy": cls._pick_field(strain_keys, cls.EXY_KEYS, ("exy",)),
+        }
         missing = [k for k, v in out.items() if v is None]
         if missing:
             raise KeyError(f"Missing required Ncorr fields: {', '.join(missing)}; strain={strain_keys}; disp={disp_keys}")
         return {k: str(v) for k, v in out.items()}
 
     @classmethod
-    def _make_frame(cls, frame_id: int, u: np.ndarray, v: np.ndarray, exx: np.ndarray, eyy: np.ndarray, exy: np.ndarray, meta: NcorrMetadata) -> FrameData:
+    def _make_frame(
+        cls,
+        frame_id: int,
+        u: np.ndarray,
+        v: np.ndarray,
+        exx: np.ndarray,
+        eyy: np.ndarray,
+        exy: np.ndarray,
+        meta: NcorrMetadata,
+    ) -> FrameData:
         cls._validate_shapes(frame_id, u, v, exx, eyy, exy)
         mask = np.isfinite(u) & np.isfinite(v) & np.isfinite(exx) & np.isfinite(eyy) & np.isfinite(exy)
-        return FrameData(frame_id, u, v, exx, eyy, exy, mask, meta.pixel_size_mm, meta.dic_point_spacing_mm, float("nan"), meta.source, meta.ncorr_spacing_raw, meta.dic_step_px)
+        return FrameData(
+            frame_id=frame_id,
+            u_map=u,
+            v_map=v,
+            exx_map=exx,
+            eyy_map=eyy,
+            exy_map=exy,
+            mask=mask,
+            pixel_size_mm=meta.pixel_size_mm,
+            dic_point_spacing_mm=meta.dic_point_spacing_mm,
+            metadata_source=meta.source,
+            ncorr_spacing_raw=meta.ncorr_spacing_raw,
+            dic_step_px=meta.dic_step_px,
+        )

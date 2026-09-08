@@ -165,3 +165,57 @@ def test_classic_ncorr_mat_loader_reads_full_tensor_and_scale(tmp_path):
     assert frames[0].metadata_source == "mat_pixtounits;mat_ncorr_spacing_plus_one"
     assert np.isclose(frames[1].u_map[0, 0], 1.0)
     assert np.isclose(frames[1].v_map[0, 0], 2.0)
+
+
+def test_hdf5_ncorr_loader_reads_reference_layout(tmp_path):
+    import h5py
+
+    mat_path = tmp_path / "synthetic_ncorr_v73.mat"
+    shape = (11, 13)
+    with h5py.File(mat_path, "w") as f:
+        data = f.create_group("data_dic_save")
+        dispinfo = data.create_group("dispinfo")
+        dispinfo.create_dataset("pixtounits", data=np.array([[0.05]]))
+        dispinfo.create_dataset("spacing", data=np.array([[2.0]]))
+        strains = data.create_group("strains")
+        displacements = data.create_group("displacements")
+        ref_dtype = h5py.special_dtype(ref=h5py.Reference)
+        refs = {name: [] for name in ("exx", "eyy", "exy", "u", "v")}
+
+        for i in range(2):
+            values = {
+                "exx": np.ones(shape) * 0.001 * i,
+                "eyy": np.ones(shape) * 0.002 * i,
+                "exy": np.zeros(shape),
+                "u": np.ones(shape) * i,
+                "v": np.ones(shape) * 2 * i,
+            }
+            for name, arr in values.items():
+                ds = f.create_dataset(f"_data/{name}_{i}", data=arr.T)
+                refs[name].append(ds.ref)
+
+        field_names = {
+            "exx": "plot_exx_ref_formatted",
+            "eyy": "plot_eyy_ref_formatted",
+            "exy": "plot_exy_ref_formatted",
+            "u": "plot_u_dic",
+            "v": "plot_v_dic",
+        }
+        for name, field in field_names.items():
+            group = strains if name in {"exx", "eyy", "exy"} else displacements
+            ds = group.create_dataset(field, shape=(2,), dtype=ref_dtype)
+            ds[...] = refs[name]
+
+    frames = list(
+        NcorrLoader.stream_frames(
+            mat_path,
+            fallback_ratio=0.1,
+            config={"experiment": {"ncorr_spacing_is_gap_count": True}},
+        )
+    )
+    assert len(frames) == 2
+    assert frames[0].u_map.shape == shape
+    assert np.isclose(frames[0].pixel_size_mm, 0.05)
+    assert np.isclose(frames[0].dic_point_spacing_mm, 0.15)
+    assert np.isclose(frames[1].u_map[0, 0], 1.0)
+    assert np.isclose(frames[1].v_map[0, 0], 2.0)
