@@ -5,6 +5,7 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
+from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -99,11 +100,10 @@ def _metric_card(
 
 
 def _write_summary_sheet(
-    writer: pd.ExcelWriter,
+    wb: Workbook,
     frame_df: pd.DataFrame,
     crack_df: pd.DataFrame,
 ) -> None:
-    wb = writer.book
     ws = wb.create_sheet("01_结果汇总")
     ws.sheet_view.showGridLines = False
 
@@ -168,8 +168,7 @@ def _write_summary_sheet(
     ws.freeze_panes = "A4"
 
 
-def _write_crack_detail_sheet(writer: pd.ExcelWriter, crack_df: pd.DataFrame) -> None:
-    wb = writer.book
+def _write_crack_detail_sheet(wb: Workbook, crack_df: pd.DataFrame) -> None:
     ws = wb.create_sheet("02_裂缝明细")
     ws.sheet_view.showGridLines = False
 
@@ -222,8 +221,7 @@ def _write_crack_detail_sheet(writer: pd.ExcelWriter, crack_df: pd.DataFrame) ->
     ws.freeze_panes = "A2"
 
 
-def _write_qa_sheet(writer: pd.ExcelWriter, frame_df: pd.DataFrame) -> None:
-    wb = writer.book
+def _write_qa_sheet(wb: Workbook, frame_df: pd.DataFrame) -> None:
     ws = wb.create_sheet("03_质量检查")
     ws.sheet_view.showGridLines = False
     ws.append(["检查项", "数值"])
@@ -275,15 +273,11 @@ def export_workbook(path: Path, frame_df: pd.DataFrame, crack_df: pd.DataFrame) 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        _write_crack_detail_sheet(writer, crack_df)
-        _write_summary_sheet(writer, frame_df, crack_df)
-        _write_qa_sheet(writer, frame_df)
-
-        wb = writer.book
-        intended = {"01_结果汇总", "02_裂缝明细", "03_质量检查"}
-        for worksheet in list(wb.worksheets):
-            if worksheet.title not in intended:
-                wb.remove(worksheet)
-        wb.move_sheet(wb["01_结果汇总"], offset=-1)
-        wb.active = 0
+    wb = Workbook()
+    wb.remove(wb.active)
+    _write_crack_detail_sheet(wb, crack_df)
+    _write_summary_sheet(wb, frame_df, crack_df)
+    _write_qa_sheet(wb, frame_df)
+    wb.move_sheet(wb["01_结果汇总"], offset=-1)
+    wb.active = 0
+    wb.save(path)
