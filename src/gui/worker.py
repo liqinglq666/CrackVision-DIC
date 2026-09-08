@@ -42,11 +42,7 @@ class AnalysisWorker(QThread):
     def run(self) -> None:
         try:
             self.out_dir.mkdir(parents=True, exist_ok=True)
-            result = analyze_peak_frame(
-                self.data_path,
-                self.mts_path,
-                self.config,
-            )
+            result = analyze_peak_frame(self.data_path, self.mts_path, self.config)
             output = export_result(result, self.out_dir)
 
             row = result.frame_df.iloc[0]
@@ -56,11 +52,9 @@ class AnalysisWorker(QThread):
                     "peak_force_N": result.selection.mts_peak_force_N,
                     "peak_time_s": result.selection.mts_peak_time_s,
                     "selected_frame": result.selection.selected_frame_id,
-                    "selected_dic_time_s": result.selection.selected_dic_time_s,
                     "match_error_s": result.selection.match_error_s,
                     "crack_count": int(row.get("crack_count", 0) or 0),
                     "mean_width_um": self._number(row, "Crack_width_mean_um"),
-                    "median_width_um": self._number(row, "Crack_width_median_um"),
                     "p95_width_um": self._number(row, "Crack_width_95_um"),
                     "max_width_um": self._number(row, "Crack_width_max_um"),
                     "cod_status": str(row.get("cod_status", "unknown")),

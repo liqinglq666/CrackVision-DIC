@@ -24,7 +24,6 @@ FILE_DIALOG_FILTER = (
 class SelectedFrame:
     frame: FrameData
     dic_time_s: float
-    time_source: str
 
 
 def select_nearest_frame(
@@ -42,11 +41,7 @@ def select_nearest_frame(
         frame = CrackVisionNcorrH5Loader.read_nearest_frame(path, float(target_dic_time_s))
         if not np.isfinite(frame.time_s):
             raise ValueError("Selected H5 frame has no usable timestamp.")
-        return SelectedFrame(
-            frame=frame,
-            dic_time_s=float(frame.time_s),
-            time_source="input_metadata",
-        )
+        return SelectedFrame(frame=frame, dic_time_s=float(frame.time_s))
 
     if suffix in MAT_SUFFIXES:
         exp = config.get("experiment", {})
@@ -59,22 +54,18 @@ def select_nearest_frame(
 
         best_frame: FrameData | None = None
         best_time = float("nan")
-        best_source = ""
         best_error = float("inf")
 
         for frame in NcorrLoader.stream_frames(path, fallback_ratio, config):
-            if np.isfinite(frame.time_s):
-                dic_time = float(frame.time_s)
-                source = "input_metadata"
-            else:
-                dic_time = float(frame.frame_id * fallback_dt)
-                source = "frame_index_fallback"
-
+            dic_time = (
+                float(frame.time_s)
+                if np.isfinite(frame.time_s)
+                else float(frame.frame_id * fallback_dt)
+            )
             error = abs(dic_time - target_dic_time_s)
             if error < best_error:
                 best_frame = frame
                 best_time = dic_time
-                best_source = source
                 best_error = error
 
             if dic_time >= target_dic_time_s and error > best_error:
@@ -83,11 +74,7 @@ def select_nearest_frame(
         if best_frame is None:
             raise ValueError("No DIC frames were found in the input MAT file")
 
-        return SelectedFrame(
-            frame=best_frame,
-            dic_time_s=best_time,
-            time_source=best_source,
-        )
+        return SelectedFrame(frame=best_frame, dic_time_s=best_time)
 
     raise ValueError(f"Unsupported input type: {suffix or '<no extension>'}")
 
