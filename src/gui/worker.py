@@ -54,17 +54,26 @@ class AnalysisWorker(QThread):
         fallback_dt = float(exp.get("sampling_interval_s", 1.0))
         if fallback_ratio <= 0 or fallback_dt <= 0:
             raise ValueError("mm_per_pixel and sampling_interval_s must be > 0")
+
         engine = CrackPhysicsEngine(self.config)
         summaries: list[dict] = []
         detail_tables: list[pd.DataFrame] = []
         first_metadata_logged = False
+
         self.log.emit(f"▶ {mat_path.name}")
         for frame in NcorrLoader.stream_frames(mat_path, fallback_ratio, self.config):
             if not self._running:
                 return
             if not first_metadata_logged:
-                self.log.emit(f"Scale | {frame.pixel_size_mm:.6g} mm/px; DIC step={frame.dic_step_px:.6g} px; grid={frame.dic_point_spacing_mm:.6g} mm/point; source={frame.metadata_source}")
+                self.log.emit(
+                    "Scale | "
+                    f"{frame.pixel_size_mm:.6g} mm/px; "
+                    f"DIC step={frame.dic_step_px:.6g} px; "
+                    f"grid={frame.dic_point_spacing_mm:.6g} mm/point; "
+                    f"source={frame.metadata_source}"
+                )
                 first_metadata_logged = True
+
             summary, details = engine.analyze_frame(frame)
             if not np.isfinite(summary.get("Time_s", np.nan)):
                 summary["Time_s"] = frame.frame_id * fallback_dt
@@ -74,14 +83,18 @@ class AnalysisWorker(QThread):
             summaries.append(summary)
             if not details.empty:
                 detail_tables.append(details)
+
         if not summaries:
             raise ValueError("No DIC frames were found in the MAT file")
+
         frame_df = prepare_frame_summary(summaries)
         crack_df = prepare_crack_details(detail_tables)
         qa_df = build_qa(frame_df)
         output = self.out_dir / f"{mat_path.stem}_CrackVision.xlsx"
         export_workbook(output, frame_df, crack_df, qa_df)
-        ok = int((frame_df["cod_status"] == "ok").sum()); failed = int(len(frame_df) - ok)
+
+        ok = int((frame_df["cod_status"] == "ok").sum())
+        failed = int(len(frame_df) - ok)
         self.log.emit(f"✓ {mat_path.name}: {len(frame_df)} frames, COD ok={ok}, not measurable={failed}")
         self.log.emit(f"Saved: {output.name}")
         self.specimen_finished.emit(str(output))
