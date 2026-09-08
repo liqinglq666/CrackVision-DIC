@@ -1,253 +1,135 @@
-# CrackVision-DIC 3.1 · Ncorr 专用裂缝宽度后处理
+# CrackVision-DIC
 
-CrackVision-DIC 现在只服务一个核心任务：
+CrackVision-DIC is a focused post-processing tool for **ECC / SHCC tensile-test DIC data calculated by Ncorr**.
 
-> **把 Ncorr 的二维 DIC 位移/应变结果转换成可审计的 ECC / SHCC 裂缝宽度（COD）结果。**
+The project intentionally does one job: convert Ncorr displacement/strain fields into auditable crack-width statistics.
 
-不再把完整 Ncorr 工程、相机裂缝分割、MTS 同步和多套统计报表塞进同一条链路。
+```text
+Ncorr
+  ↓
+U / V / Exx / Eyy / Exy
+  ↓
+maximum principal tensile strain
+  ↓
+crack candidate + skeleton
+  ↓
+local crack normal
+  ↓
+multiple U/V samples on both crack faces
+  ↓
+robust linear fits extrapolated to the crack plane
+  ↓
+COD
+  ↓
+Excel + QA
+```
 
-## 推荐工作流
+## Recommended input
 
-### 新试件：不要先保存巨大 Ncorr MAT
-
-以后建议用明确的句柄启动 Ncorr：
+For new tests, do not save a huge Ncorr MAT only for CrackVision. After Ncorr has completed **Format Displacements**, physical unit conversion and **Calculate Strains**, export the compact bridge directly:
 
 ```matlab
 handles_ncorr = ncorr;
-```
+% ... finish the normal Ncorr workflow ...
 
-按正常流程完成：
-
-```text
-Load Reference Image
-Load Current Image(s)
-Set ROI
-Set DIC Parameters
-Perform DIC Analysis
-Format Displacements
-Get Unit Conversion（使用 mm 标尺）
-Calculate Strains
-```
-
-然后在 MATLAB 命令行：
-
-```matlab
-addpath('CrackVision-DIC/matlab')
-
+addpath('path/to/CrackVision-DIC/matlab')
 export_ncorr_to_crackvision( ...
     handles_ncorr, ...
     'Specimen01_CrackVision.h5', ...
-    5);
+    5);   % 5 s/image
 ```
 
-最后的 `5` 表示每张图相隔 5 s。
-
-如果 Ncorr 是直接以 `ans` 打开的，也可以临时：
-
-```matlab
-export_ncorr_to_crackvision(ans, 'Specimen01_CrackVision.h5', 5);
-```
-
-但更推荐 `handles_ncorr = ncorr;`，避免 `ans` 被后续 MATLAB 命令覆盖。
-
-### 已经有巨大 MAT 的旧试件
-
-只需要转换一次：
-
-```matlab
-addpath('CrackVision-DIC/matlab')
-
-export_ncorr_to_crackvision( ...
-    'Specimen01_Ncorr.mat', ...
-    'Specimen01_CrackVision.h5', ...
-    5);
-```
-
-MATLAB 会读取 `data_dic_save`，只导出 CrackVision 真正需要的数据。
-
-## CrackVision-Ncorr H5 保留什么
+The bridge stores only the fields required by CrackVision:
 
 ```text
-/fields/u
-/fields/v
-/fields/exx
-/fields/eyy
-/fields/exy
-/fields/mask
-/time_s
-
-metadata:
+U, V
+Exx, Eyy, Exy
+finite mask
+time
 pixel_size_mm
-ncorr_spacing_raw
-dic_step_px
-dic_point_spacing_mm
-coordinate_system = reference
-strain_measure = Green-Lagrange
-numeric_precision
+Ncorr spacing
+DIC step
+DIC point spacing in mm
 ```
 
-桥接脚本只导出 Ncorr 的 reference-formatted 数值场：
+It uses one reference configuration throughout:
 
 ```text
 plot_u_ref_formatted
 plot_v_ref_formatted
-
 plot_exx_ref_formatted
 plot_eyy_ref_formatted
 plot_exy_ref_formatted
 ```
 
-这样 U/V、裂缝位置和应变张量处于同一个参考坐标系里。Ncorr 的 current-formatted Eulerian 场仍可用于可视化，但 CrackVision 主 COD 链路不把 reference 和 current 坐标系混用。
+Existing saved Ncorr `.mat` files remain supported as a compatibility input.
 
-## 为什么这个 H5 比完整 Ncorr MAT 小
+## Crack-width method
 
-完整 Ncorr 保存还可能包含：
-
-- reference/current image 信息
-- ROI 对象
-- correlation coefficient
-- 多种 formatted plots
-- GUI/分析状态
-- 其他中间结果
-
-CrackVision-Ncorr H5 只保留 5 个核心数值场、mask、时间和尺度。
-
-默认使用：
-
-```text
-single precision (float32)
-+ HDF5 chunking
-+ gzip / Deflate compression
-```
-
-如果必须保留 double：
-
-```matlab
-export_ncorr_to_crackvision( ...
-    handles_ncorr, ...
-    'Specimen01_CrackVision.h5', ...
-    5, ...
-    'double');
-```
-
-轻量 H5 仍可能较大，因为全过程二维场本身就有大量数据；目标是**删掉与裂缝宽度无关的 Ncorr 数据**，不是把几百帧 DIC 场压成几 MB。
-
-## CrackVision 计算链
-
-```text
-Ncorr
-  ↓
-U / V
-Exx / Eyy / Exy
-  ↓
-maximum principal tensile strain
-  ↓
-crack candidate
-  ↓
-skeleton
-  ↓
-local tangent / normal
-  ↓
-sample U/V on both crack faces
-  ↓
-robust line fit on each side
-  ↓
-extrapolate to crack plane
-  ↓
-COD = normal displacement discontinuity
-  ↓
-Excel + QA
-```
-
-最大主拉应变：
+Crack location is detected from the maximum principal tensile strain:
 
 ```text
 ε1 = (Exx + Eyy)/2 + sqrt(((Exx - Eyy)/2)^2 + Exy^2)
 ```
 
-Ncorr reference-formatted `Exy` 按 Green-Lagrange 张量剪切分量处理。
+For each crack-skeleton point, CrackVision estimates the local crack normal, samples U/V on both sides, fits the local displacement field on each crack face and extrapolates both fits to the crack plane.
 
-## 裂缝宽度不是应变带宽度
+The crack opening displacement is the normal displacement discontinuity. Continuous elastic deformation is therefore separated from the discontinuous crack opening better than with a simple two-point subtraction.
 
-CrackVision 不把彩色 Exx/主应变带的“粗细”当裂缝宽度。
+Failed measurements remain `NaN`; they are never converted to fake `0 μm` values.
 
-主结果来自裂缝两侧位移跳量：
-
-```text
-COD = |Δu · n|
-COD = |ΔU * nx + ΔV * ny|
-```
-
-并通过裂缝两侧多点回归后外推到裂缝面，尽量去掉连续弹性位移梯度。
-
-## Ncorr spacing
-
-Ncorr 原生 `spacing` 按 skipped-pixel count 处理：
+Common `cod_status` values:
 
 ```text
-DIC step px = spacing + 1
-DIC grid spacing mm = (spacing + 1) × pixtounits
+ok
+no_crack_candidate
+insufficient_cod_samples
+crack_filter_removed_all
 ```
 
-CrackVision 将两种尺度分开：
+## Scale convention
+
+Ncorr displacement and DIC-grid geometry use different scales:
 
 ```text
 U/V displacement px × pixel_size_mm
-    → displacement mm
+    -> displacement mm
 
 DIC grid index × dic_point_spacing_mm
-    → crack geometry / physical sampling distance
+    -> geometry/search distance mm
 ```
 
-## 输入优先级
-
-GUI 支持：
+For native Ncorr spacing, CrackVision uses:
 
 ```text
-推荐：
-*.h5 / *.hdf5
-CrackVision-Ncorr bridge
-
-兼容：
-*.mat
-original Ncorr data_dic_save
+DIC step px = spacing + 1
+DIC point spacing mm = DIC step px × pixel_size_mm
 ```
 
-日常分析优先 H5。原始 MAT 只保留作旧数据兼容和追溯。
+## Output
 
-## 输出
-
-每个试件只生成一个：
+Each specimen creates one workbook:
 
 ```text
-<Specimen>_CrackVision.xlsx
+<specimen>_CrackVision.xlsx
+├─ 00_READ_ME
+├─ 01_Frame_Summary
+├─ 02_Crack_Details
+└─ 03_QA
 ```
 
-包括：
+Recommended paper-facing metrics:
 
 ```text
-00_READ_ME
-01_Frame_Summary
-02_Crack_Details
-03_QA
+W_median_um   primary robust width
+W_avg_um      mean width
+W_95_um       upper distribution metric
+W_max_um      extreme/diagnostic value
 ```
 
-推荐论文指标：
+## Run
 
-```text
-W_median_um
-W_avg_um
-W_95_um
-W_max_um
-crack_count
-COD_samples
-Fit_R2_median
-cod_status
-```
-
-计算失败保持 `NaN`，不会再强制写成 `0 μm`。
-
-## 运行
+Python 3.10+ is recommended.
 
 ```bash
 python -m venv .venv
@@ -255,24 +137,65 @@ python -m venv .venv
 # Windows
 .venv\Scripts\activate
 
+# macOS/Linux
+source .venv/bin/activate
+
 pip install -r requirements.txt
 python main.py
 ```
 
-测试：
-
-```bash
-python -m pytest -q
-```
-
-## 不要把实验数据提交到 GitHub
-
-仓库已经忽略：
+The GUI accepts:
 
 ```text
-*.mat
-*.h5
-*.hdf5
+*.h5 / *.hdf5    preferred CrackVision-Ncorr bridge
+*.mat            original Ncorr data compatibility
 ```
 
-GitHub 只保存代码。原始图片、完整 Ncorr MAT 和 CrackVision bridge H5 都应保存在实验数据目录或实验室存储中。
+## Tests
+
+Development dependencies are separated from runtime dependencies:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+## Project structure
+
+```text
+CrackVision-DIC/
+├─ main.py
+├─ config/
+│  └─ default.yaml
+├─ matlab/
+│  └─ export_ncorr_to_crackvision.m
+├─ src/
+│  ├─ core/
+│  │  ├─ config.py        # configuration boundary
+│  │  ├─ input.py         # H5/MAT dispatch
+│  │  ├─ io_bridge.py     # compact H5 reader
+│  │  ├─ io_ncorr.py      # original Ncorr MAT compatibility reader
+│  │  ├─ models.py        # strict frame data contract
+│  │  ├─ physics.py       # principal strain + crack detection + fitted COD
+│  │  ├─ pipeline.py      # complete file-analysis orchestration
+│  │  └─ export.py        # Excel + QA
+│  └─ gui/
+│     ├─ main_window.py   # UI only
+│     └─ worker.py        # thin QThread adapter
+└─ tests/
+```
+
+The architecture rule is simple:
+
+```text
+GUI must not know Ncorr file internals.
+Worker must not implement scientific calculations.
+Readers must not calculate COD.
+Physics must not know about Qt or Excel.
+```
+
+## Intentionally not included
+
+The project no longer carries unrelated feature layers such as MTS synchronisation, camera crack segmentation, image-width estimates, multiple report systems, batch dashboards, multiprocessing/temp-file plumbing or compatibility wrapper classes.
+
+Those features do not improve the primary Ncorr-COD measurement and make scientific failure modes harder to audit.
