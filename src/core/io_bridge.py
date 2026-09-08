@@ -14,6 +14,8 @@ class CrackVisionNcorrH5Loader:
     FORMAT = "CrackVision-Ncorr"
     FORMAT_VERSION = 1
     REQUIRED_FIELDS = ("u", "v", "exx", "eyy", "exy")
+    MM_UNITS = {"mm", "millimeter", "millimeters", "millimetre", "millimetres", "mm_assumed"}
+    PX_UNITS = {"px", "pixel", "pixels"}
 
     @staticmethod
     def _decode_attr(value: Any) -> str:
@@ -121,13 +123,29 @@ class CrackVisionNcorrH5Loader:
             raw_spacing_value if np.isfinite(raw_spacing_value) else None
         )
 
+        displacement_units = cls._decode_attr(
+            f.attrs.get("displacement_units", f.attrs.get("source_units", "mm"))
+        ).strip().lower()
+        if displacement_units in cls.MM_UNITS or displacement_units.startswith("mm"):
+            displacement_to_pixel = 1.0 / pixel_size_mm
+            displacement_note = "formatted_mm_to_pixel"
+        elif displacement_units in cls.PX_UNITS:
+            displacement_to_pixel = 1.0
+            displacement_note = "pixel_displacement"
+        else:
+            raise ValueError(
+                "Bridge displacement units must be mm or pixel; "
+                f"got {displacement_units!r}"
+            )
+
         coordinate = cls._decode_attr(f.attrs.get("coordinate_system", "reference"))
         strain_measure = cls._decode_attr(
             f.attrs.get("strain_measure", "Green-Lagrange")
         )
         precision = cls._decode_attr(f.attrs.get("numeric_precision", "unknown"))
         metadata_source = (
-            f"crackvision_ncorr_h5;{coordinate};{strain_measure};{precision}"
+            f"crackvision_ncorr_h5;{coordinate};{strain_measure};{precision};"
+            f"{displacement_note}"
         )
 
         time_values = cls._time_values(f, n_frames)
@@ -152,13 +170,15 @@ class CrackVisionNcorrH5Loader:
             "ncorr_spacing_raw": ncorr_spacing_raw,
             "metadata_source": metadata_source,
             "time_values": time_values,
+            "displacement_to_pixel": displacement_to_pixel,
         }
 
     @classmethod
     def _read_frame(cls, context: dict[str, Any], frame_id: int) -> FrameData:
         datasets = context["datasets"]
-        u = np.asarray(datasets["u"][frame_id], dtype=np.float64)
-        v = np.asarray(datasets["v"][frame_id], dtype=np.float64)
+        displacement_to_pixel = float(context["displacement_to_pixel"])
+        u = np.asarray(datasets["u"][frame_id], dtype=np.float64) * displacement_to_pixel
+        v = np.asarray(datasets["v"][frame_id], dtype=np.float64) * displacement_to_pixel
         exx = np.asarray(datasets["exx"][frame_id], dtype=np.float64)
         eyy = np.asarray(datasets["eyy"][frame_id], dtype=np.float64)
         exy = np.asarray(datasets["exy"][frame_id], dtype=np.float64)
