@@ -27,7 +27,7 @@ jobs:
       - name: Install Linux GUI runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb libxkbcommon-x11-0 libxcb-cursor0 fonts-noto-cjk
+          sudo apt-get install -y xvfb libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 fonts-noto-cjk
 
       - name: Install Python dependencies
         run: |
