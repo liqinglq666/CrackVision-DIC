@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
 import pandas as pd
 
 from .export import build_qa, export_workbook, prepare_crack_details, prepare_frame_summary
@@ -41,6 +42,66 @@ class AnalysisResult:
         return str(self.frame_df.iloc[0]["cod_status"])
 
 
+def apply_equal_weight_crack_summary(
+    summary: dict[str, Any],
+    details: pd.DataFrame,
+) -> dict[str, Any]:
+    """Make specimen-level width statistics equal-weight across accepted cracks.
+
+    Each accepted crack is represented by its own ``W_median_mm`` value. The
+    specimen/frame summary is then calculated across those crack-level values,
+    so a long crack with many local COD samples does not carry more statistical
+    weight than a shorter accepted crack.
+
+    The explicit ``Crack_width_*`` fields are the recommended paper-facing
+    metrics. Legacy frame-level ``W_*`` fields are retained as aliases to the
+    same equal-weight statistics for backward compatibility.
+    """
+    out = dict(summary)
+    out["crack_width_basis"] = "equal_weight_per_crack_W_median"
+    out["crack_representative_count"] = 0
+
+    metric_fields = (
+        "Crack_width_mean_mm",
+        "Crack_width_median_mm",
+        "Crack_width_95_mm",
+        "Crack_width_max_mm",
+    )
+    for field in metric_fields:
+        out[field] = float("nan")
+
+    if details is None or details.empty or "W_median_mm" not in details.columns:
+        return out
+
+    widths = pd.to_numeric(details["W_median_mm"], errors="coerce").to_numpy(dtype=float)
+    widths = widths[np.isfinite(widths)]
+    if widths.size == 0:
+        return out
+
+    mean_width = float(np.mean(widths))
+    median_width = float(np.median(widths))
+    p95_width = float(np.percentile(widths, 95))
+    max_width = float(np.max(widths))
+
+    out.update(
+        {
+            "crack_representative_count": int(widths.size),
+            "Crack_width_mean_mm": mean_width,
+            "Crack_width_median_mm": median_width,
+            "Crack_width_95_mm": p95_width,
+            "Crack_width_max_mm": max_width,
+            # Backward-compatible frame-summary aliases. These now mean
+            # statistics across per-crack representative widths, not across
+            # every local COD sample.
+            "W_avg_mm": mean_width,
+            "W_median_mm": median_width,
+            "W_95_mm": p95_width,
+            "W_max_mm": max_width,
+        }
+    )
+    return out
+
+
 def analyze_peak_frame(
     data_path: Path,
     mts_csv_path: Path,
@@ -65,6 +126,7 @@ def analyze_peak_frame(
 
     engine = CrackPhysicsEngine(config)
     summary, details = engine.analyze_frame(selected.frame)
+    summary = apply_equal_weight_crack_summary(summary, details)
 
     selected_mts_time_s = float(selected.dic_time_s + dic_frame0_mts_time_s)
     match_error_s = float(selected_mts_time_s - mts_peak.peak_time_s)
@@ -108,6 +170,11 @@ def analyze_peak_frame(
             {"Metric": "selected_DIC_frame", "Value": selected.frame.frame_id},
             {"Metric": "selected_DIC_time_s", "Value": selected.dic_time_s},
             {"Metric": "frame_match_error_s", "Value": match_error_s},
+            {"Metric": "crack_width_basis", "Value": summary["crack_width_basis"]},
+            {
+                "Metric": "crack_representative_count",
+                "Value": summary["crack_representative_count"],
+            },
         ]
     )
     qa_df = pd.concat([qa_df, qa_extra], ignore_index=True)
