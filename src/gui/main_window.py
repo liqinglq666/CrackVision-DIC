@@ -3,10 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QApplication,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -16,7 +15,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QDoubleSpinBox,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -26,13 +24,13 @@ from src.gui.worker import AnalysisWorker
 
 
 class MainWindow(QMainWindow):
-    """Deliberately small UI: choose Ncorr MAT files, scale fallback and output folder."""
+    """Small Ncorr-only UI. Compact bridge HDF5 is the preferred input."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("CrackVision-DIC · Core COD")
-        self.resize(880, 620)
-        self.mat_files: list[Path] = []
+        self.setWindowTitle("CrackVision-DIC · Ncorr COD")
+        self.resize(900, 650)
+        self.data_files: list[Path] = []
         self.out_dir: Path | None = None
         self.worker: AnalysisWorker | None = None
         self.config = self._load_config()
@@ -53,7 +51,9 @@ class MainWindow(QMainWindow):
 
         title = QLabel("CrackVision-DIC")
         title.setFont(QFont("Segoe UI", 24, QFont.Weight.Bold))
-        subtitle = QLabel("Ncorr → 最大主拉应变 → 裂缝骨架 → 双侧多点拟合 COD → Excel")
+        subtitle = QLabel(
+            "Ncorr → CrackVision H5 → 最大主拉应变 → 裂缝骨架 → 双侧多点拟合 COD"
+        )
         subtitle.setStyleSheet("color:#5f6368;font-size:13px;")
         layout.addWidget(title)
         layout.addWidget(subtitle)
@@ -64,7 +64,7 @@ class MainWindow(QMainWindow):
         file_row = QHBoxLayout()
         self.file_edit = QLineEdit()
         self.file_edit.setReadOnly(True)
-        choose_files = QPushButton("选择 MAT")
+        choose_files = QPushButton("选择 H5 / MAT")
         choose_files.clicked.connect(self._choose_files)
         file_row.addWidget(self.file_edit, 1)
         file_row.addWidget(choose_files)
@@ -83,17 +83,25 @@ class MainWindow(QMainWindow):
         self.scale_spin.setDecimals(6)
         self.scale_spin.setRange(0.000001, 1000.0)
         self.scale_spin.setSingleStep(0.001)
-        self.scale_spin.setValue(float(self.config.get("experiment", {}).get("mm_per_pixel", 0.045)))
+        self.scale_spin.setValue(
+            float(self.config.get("experiment", {}).get("mm_per_pixel", 0.045))
+        )
         self.scale_spin.setSuffix(" mm/px")
-        self.scale_spin.setToolTip("仅当 MAT 内没有 Ncorr pixtounits 时使用")
+        self.scale_spin.setToolTip(
+            "仅供旧 Ncorr MAT 缺少 pixtounits 时兜底；CrackVision H5 会读取自身标定。"
+        )
         form.addRow("尺度兜底", self.scale_spin)
         layout.addLayout(form)
 
         note = QLabel(
-            "必须包含 U、V、Exx、Eyy、Exy。程序不再用 Exx 单方向硬猜裂缝，也不会把计算失败写成 0 μm。"
+            "推荐输入：matlab/export_ncorr_to_crackvision.m 生成的 CrackVision-Ncorr H5。"
+            "它只保留全过程 U/V/Exx/Eyy/Exy、mask、时间和尺度信息；"
+            "巨大原始 Ncorr MAT 仅作为旧数据兼容入口。"
         )
         note.setWordWrap(True)
-        note.setStyleSheet("background:#f5f7fa;border-radius:8px;padding:12px;color:#374151;")
+        note.setStyleSheet(
+            "background:#f5f7fa;border-radius:8px;padding:12px;color:#374151;"
+        )
         layout.addWidget(note)
 
         controls = QHBoxLayout()
@@ -121,21 +129,32 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             "QMainWindow{background:#ffffff;}"
             "QPushButton{padding:8px 14px;}"
-            "QLineEdit,QDoubleSpinBox,QTextEdit{border:1px solid #d7dce2;border-radius:6px;padding:7px;}"
-            "QProgressBar{height:12px;border:1px solid #d7dce2;border-radius:6px;text-align:center;}"
+            "QLineEdit,QDoubleSpinBox,QTextEdit{"
+            "border:1px solid #d7dce2;border-radius:6px;padding:7px;}"
+            "QProgressBar{height:12px;border:1px solid #d7dce2;"
+            "border-radius:6px;text-align:center;}"
         )
 
     def _choose_files(self) -> None:
-        files, _ = QFileDialog.getOpenFileNames(self, "选择 Ncorr MAT 文件", "", "MATLAB files (*.mat)")
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "选择 CrackVision-Ncorr H5 或原始 Ncorr MAT",
+            "",
+            "Ncorr data (*.h5 *.hdf5 *.mat);;"
+            "CrackVision-Ncorr H5 (*.h5 *.hdf5);;"
+            "Original Ncorr MAT (*.mat)",
+        )
         if not files:
             return
-        self.mat_files = [Path(p) for p in files]
+
+        self.data_files = [Path(p) for p in files]
         if len(files) == 1:
             self.file_edit.setText(files[0])
         else:
-            self.file_edit.setText(f"已选择 {len(files)} 个 MAT 文件")
+            self.file_edit.setText(f"已选择 {len(files)} 个数据文件")
+
         if self.out_dir is None:
-            self.out_dir = self.mat_files[0].parent / "CrackVision_Output"
+            self.out_dir = self.data_files[0].parent / "CrackVision_Output"
             self.out_edit.setText(str(self.out_dir))
 
     def _choose_out(self) -> None:
@@ -145,21 +164,31 @@ class MainWindow(QMainWindow):
             self.out_edit.setText(folder)
 
     def _start(self) -> None:
-        if not self.mat_files:
-            QMessageBox.warning(self, "缺少输入", "请先选择 Ncorr .mat 文件。")
+        if not self.data_files:
+            QMessageBox.warning(
+                self,
+                "缺少输入",
+                "请先选择 CrackVision-Ncorr .h5 或原始 Ncorr .mat 文件。",
+            )
             return
         if self.out_dir is None:
             QMessageBox.warning(self, "缺少输出目录", "请选择输出目录。")
             return
 
-        self.config.setdefault("experiment", {})["mm_per_pixel"] = float(self.scale_spin.value())
-        self.worker = AnalysisWorker(self.mat_files, self.out_dir, self.config)
+        self.config.setdefault("experiment", {})["mm_per_pixel"] = float(
+            self.scale_spin.value()
+        )
+        self.worker = AnalysisWorker(
+            self.data_files,
+            self.out_dir,
+            self.config,
+        )
         self.worker.progress.connect(self._on_progress)
         self.worker.log.connect(self._append_log)
         self.worker.failed.connect(self._on_failed)
         self.worker.finished.connect(self._on_finished)
 
-        self.progress.setRange(0, len(self.mat_files))
+        self.progress.setRange(0, len(self.data_files))
         self.progress.setValue(0)
         self.log_box.clear()
         self.start_button.setEnabled(False)
