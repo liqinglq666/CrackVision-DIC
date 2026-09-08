@@ -12,22 +12,10 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 
 
 FRAME_WIDTH_COLUMNS_MM = (
-    "W_median_mm",
-    "W_avg_mm",
-    "W_95_mm",
-    "W_max_mm",
     "Crack_width_mean_mm",
     "Crack_width_median_mm",
     "Crack_width_95_mm",
     "Crack_width_max_mm",
-)
-
-CRACK_DETAIL_COLUMNS_MM = (
-    "W_median_mm",
-    "W_avg_mm",
-    "W_95_mm",
-    "W_max_mm",
-    "Slip_median_mm",
 )
 
 NAVY = "1F4E78"
@@ -40,30 +28,30 @@ BORDER = Side(style="thin", color="D9E1F2")
 
 
 def prepare_frame_summary(rows: Iterable[dict]) -> pd.DataFrame:
-    """Build the selected-frame table while preserving failed measurements as NaN."""
+    """Build the single selected-frame table and add only paper-facing μm fields."""
     df = pd.DataFrame(list(rows))
     if df.empty:
         return df
     for col in FRAME_WIDTH_COLUMNS_MM:
         if col not in df.columns:
             df[col] = np.nan
-        df[col.replace("_mm", "_um")] = (
-            pd.to_numeric(df[col], errors="coerce") * 1000.0
-        )
+        df[col.replace("_mm", "_um")] = pd.to_numeric(df[col], errors="coerce") * 1000.0
     return df.sort_values("Frame").reset_index(drop=True)
 
 
 def prepare_crack_details(tables: Iterable[pd.DataFrame]) -> pd.DataFrame:
+    """Return only the five crack-level fields used by the workbook."""
     valid = [table for table in tables if table is not None and not table.empty]
+    columns = ["Crack_ID", "Length_mm", "W_median_um", "COD_samples", "Fit_R2_median"]
     if not valid:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=columns)
+
     df = pd.concat(valid, ignore_index=True)
-    for col in CRACK_DETAIL_COLUMNS_MM:
-        if col in df.columns:
-            df[col.replace("_mm", "_um")] = (
-                pd.to_numeric(df[col], errors="coerce") * 1000.0
-            )
-    return df
+    df["W_median_um"] = pd.to_numeric(df["W_median_mm"], errors="coerce") * 1000.0
+    for col in columns:
+        if col not in df.columns:
+            df[col] = np.nan
+    return df[columns].sort_values("Crack_ID").reset_index(drop=True)
 
 
 def _safe(row: pd.Series, key: str, default: object = "—") -> object:
@@ -147,7 +135,7 @@ def _write_summary_sheet(
     for col in "ABCDEFGH":
         ws.column_dimensions[col].width = 17
 
-    if crack_df is not None and not crack_df.empty and "W_median_um" in crack_df.columns:
+    if crack_df is not None and not crack_df.empty:
         details_ws = wb["02_裂缝明细"]
         if details_ws.max_row >= 2:
             chart = BarChart()
@@ -176,15 +164,14 @@ def _write_crack_detail_sheet(wb: Workbook, crack_df: pd.DataFrame) -> None:
     ws.append(headers)
 
     if crack_df is not None and not crack_df.empty:
-        table_df = crack_df.copy().sort_values("Crack_ID")
-        for _, row in table_df.iterrows():
+        for _, row in crack_df.sort_values("Crack_ID").iterrows():
             ws.append(
                 [
-                    int(row.get("Crack_ID", 0)),
-                    float(row.get("Length_mm", np.nan)),
-                    float(row.get("W_median_um", np.nan)),
-                    int(row.get("COD_samples", 0)),
-                    float(row.get("Fit_R2_median", np.nan)),
+                    int(row["Crack_ID"]),
+                    float(row["Length_mm"]),
+                    float(row["W_median_um"]),
+                    int(row["COD_samples"]),
+                    float(row["Fit_R2_median"]),
                 ]
             )
 
