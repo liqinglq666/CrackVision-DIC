@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -18,12 +17,3 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Configuration root must be a mapping: {config_path}")
     return data
-
-
-def with_mm_per_pixel(config: dict[str, Any], value: float) -> dict[str, Any]:
-    """Return a copy with the legacy-MAT scale fallback updated."""
-    if value <= 0:
-        raise ValueError("mm_per_pixel must be > 0")
-    updated = deepcopy(config)
-    updated.setdefault("experiment", {})["mm_per_pixel"] = float(value)
-    return updated
