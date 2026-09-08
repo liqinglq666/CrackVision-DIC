@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
@@ -20,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.core.config import load_config, with_mm_per_pixel
 from src.gui.worker import AnalysisWorker
 
 
@@ -33,14 +33,8 @@ class MainWindow(QMainWindow):
         self.data_files: list[Path] = []
         self.out_dir: Path | None = None
         self.worker: AnalysisWorker | None = None
-        self.config = self._load_config()
+        self.config = load_config()
         self._build_ui()
-
-    @staticmethod
-    def _load_config() -> dict:
-        config_path = Path(__file__).resolve().parents[2] / "config" / "default.yaml"
-        with config_path.open("r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -147,12 +141,10 @@ class MainWindow(QMainWindow):
         if not files:
             return
 
-        self.data_files = [Path(p) for p in files]
-        if len(files) == 1:
-            self.file_edit.setText(files[0])
-        else:
-            self.file_edit.setText(f"已选择 {len(files)} 个数据文件")
-
+        self.data_files = [Path(path) for path in files]
+        self.file_edit.setText(
+            files[0] if len(files) == 1 else f"已选择 {len(files)} 个数据文件"
+        )
         if self.out_dir is None:
             self.out_dir = self.data_files[0].parent / "CrackVision_Output"
             self.out_edit.setText(str(self.out_dir))
@@ -175,14 +167,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "缺少输出目录", "请选择输出目录。")
             return
 
-        self.config.setdefault("experiment", {})["mm_per_pixel"] = float(
-            self.scale_spin.value()
-        )
-        self.worker = AnalysisWorker(
-            self.data_files,
-            self.out_dir,
-            self.config,
-        )
+        run_config = with_mm_per_pixel(self.config, float(self.scale_spin.value()))
+        self.worker = AnalysisWorker(self.data_files, self.out_dir, run_config)
         self.worker.progress.connect(self._on_progress)
         self.worker.log.connect(self._append_log)
         self.worker.failed.connect(self._on_failed)
