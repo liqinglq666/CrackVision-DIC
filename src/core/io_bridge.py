@@ -24,21 +24,6 @@ class CrackVisionNcorrH5Loader:
         return str(value)
 
     @classmethod
-    def is_bridge_file(cls, path: Path) -> bool:
-        try:
-            import h5py
-        except ImportError:
-            return False
-        path = Path(path)
-        if not path.exists() or not h5py.is_hdf5(str(path)):
-            return False
-        try:
-            with h5py.File(str(path), "r") as f:
-                return cls._decode_attr(f.attrs.get("format", "")) == cls.FORMAT
-        except OSError:
-            return False
-
-    @classmethod
     def stream_frames(cls, path: Path) -> Generator[FrameData, None, None]:
         try:
             import h5py
