@@ -1,0 +1,36 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE and Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Runtime logs and analysis output
+logs/
+*.log
+*_CrackVision.xlsx
+
+# Experimental DIC data: keep huge Ncorr/bridge files out of Git
+*.mat
+*.h5
+*.hdf5
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
