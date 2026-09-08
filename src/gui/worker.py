@@ -7,7 +7,13 @@ import numpy as np
 import pandas as pd
 from PySide6.QtCore import QThread, Signal
 
-from src.core.export import build_qa, export_workbook, prepare_crack_details, prepare_frame_summary
+from src.core.export import (
+    build_qa,
+    export_workbook,
+    prepare_crack_details,
+    prepare_frame_summary,
+)
+from src.core.io_bridge import CrackVisionNcorrH5Loader
 from src.core.io_ncorr import NcorrLoader
 from src.core.physics import CrackPhysicsEngine
 
@@ -20,9 +26,9 @@ class AnalysisWorker(QThread):
     specimen_finished = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, mat_files: list[Path], out_dir: Path, config: dict) -> None:
+    def __init__(self, data_files: list[Path], out_dir: Path, config: dict) -> None:
         super().__init__()
-        self.mat_files = [Path(p) for p in mat_files]
+        self.data_files = [Path(p) for p in data_files]
         self.out_dir = Path(out_dir)
         self.config = config
         self._running = True
@@ -33,25 +39,25 @@ class AnalysisWorker(QThread):
     def run(self) -> None:
         try:
             self.out_dir.mkdir(parents=True, exist_ok=True)
-            total = len(self.mat_files)
-            for index, mat_path in enumerate(self.mat_files, start=1):
+            total = len(self.data_files)
+            for index, data_path in enumerate(self.data_files, start=1):
                 if not self._running:
                     self.log.emit("Analysis cancelled.")
                     return
                 try:
-                    self._process_one(mat_path)
+                    self._process_one(data_path)
                 except Exception as exc:
-                    logger.exception("Failed to analyse %s", mat_path)
-                    self.log.emit(f"❌ {mat_path.name}: {exc}")
+                    logger.exception("Failed to analyse %s", data_path)
+                    self.log.emit(f"❌ {data_path.name}: {exc}")
                 self.progress.emit(index, total)
         except Exception as exc:
             logger.exception("Worker failed")
             self.failed.emit(str(exc))
 
-    def _process_one(self, mat_path: Path) -> None:
+    def _process_one(self, data_path: Path) -> None:
         exp = self.config.get("experiment", {})
         fallback_ratio = float(exp.get("mm_per_pixel", 0.045))
-        fallback_dt = float(exp.get("sampling_interval_s", 1.0))
+        fallback_dt = float(exp.get("sampling_interval_s", 5.0))
         if fallback_ratio <= 0 or fallback_dt <= 0:
             raise ValueError("mm_per_pixel and sampling_interval_s must be > 0")
 
@@ -60,10 +66,23 @@ class AnalysisWorker(QThread):
         detail_tables: list[pd.DataFrame] = []
         first_metadata_logged = False
 
-        self.log.emit(f"▶ {mat_path.name}")
-        for frame in NcorrLoader.stream_frames(mat_path, fallback_ratio, self.config):
+        preferred = data_path.suffix.lower() in {".h5", ".hdf5"}
+        mode = "CrackVision-Ncorr H5" if preferred else "original Ncorr MAT"
+        self.log.emit(f"▶ {data_path.name} [{mode}]")
+
+        if preferred:
+            frame_stream = CrackVisionNcorrH5Loader.stream_frames(data_path)
+        else:
+            frame_stream = NcorrLoader.stream_frames(
+                data_path,
+                fallback_ratio,
+                self.config,
+            )
+
+        for frame in frame_stream:
             if not self._running:
                 return
+
             if not first_metadata_logged:
                 self.log.emit(
                     "Scale | "
@@ -79,22 +98,32 @@ class AnalysisWorker(QThread):
                 summary["Time_s"] = frame.frame_id * fallback_dt
                 summary["time_source"] = "frame_index_fallback"
             else:
-                summary["time_source"] = "mat_metadata"
+                summary["time_source"] = "input_metadata"
+
             summaries.append(summary)
             if not details.empty:
                 detail_tables.append(details)
 
         if not summaries:
-            raise ValueError("No DIC frames were found in the MAT file")
+            raise ValueError("No DIC frames were found in the input file")
 
         frame_df = prepare_frame_summary(summaries)
         crack_df = prepare_crack_details(detail_tables)
         qa_df = build_qa(frame_df)
-        output = self.out_dir / f"{mat_path.stem}_CrackVision.xlsx"
+
+        stem = data_path.stem
+        for suffix in ("_CrackVision", "_crackvision"):
+            if stem.endswith(suffix):
+                stem = stem[: -len(suffix)]
+                break
+        output = self.out_dir / f"{stem}_CrackVision.xlsx"
         export_workbook(output, frame_df, crack_df, qa_df)
 
         ok = int((frame_df["cod_status"] == "ok").sum())
         failed = int(len(frame_df) - ok)
-        self.log.emit(f"✓ {mat_path.name}: {len(frame_df)} frames, COD ok={ok}, not measurable={failed}")
+        self.log.emit(
+            f"✓ {data_path.name}: {len(frame_df)} frames, "
+            f"COD ok={ok}, not measurable={failed}"
+        )
         self.log.emit(f"Saved: {output.name}")
         self.specimen_finished.emit(str(output))

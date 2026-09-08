@@ -20,16 +20,15 @@ venv.bak/
 *.swp
 *.swo
 
-# Crash Logs and Output
+# Runtime logs and analysis output
 logs/
 *.log
+*_CrackVision.xlsx
 
-# Project specific data output
-*_Origin_Plot_Data.xlsx
-*_Statistics_Report.xlsx
-
-# Numba cache
-__numba_cache__/
+# Experimental DIC data: keep huge Ncorr/bridge files out of Git
+*.mat
+*.h5
+*.hdf5
 
 # PyInstaller build artifacts
 build/
