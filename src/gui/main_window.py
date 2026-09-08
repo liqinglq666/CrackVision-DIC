@@ -2,38 +2,38 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
-    QDoubleSpinBox,
     QFileDialog,
-    QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
-    QProgressBar,
     QPushButton,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from src.core.config import load_config, with_mm_per_pixel
+from src.core.config import load_config
 from src.core.input import FILE_DIALOG_FILTER
 from src.gui.worker import AnalysisWorker
 
 
 class MainWindow(QMainWindow):
-    """Peak-tensile-stress frame analysis for Ncorr ECC/SHCC data."""
+    """Minimal peak-stress crack-width workflow for Ncorr ECC/SHCC data."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("CrackVision-DIC · Peak Stress COD")
-        self.resize(920, 700)
+        self.setWindowTitle("CrackVision-DIC")
+        self.resize(820, 560)
+        self.setMinimumSize(760, 520)
+
         self.data_file: Path | None = None
         self.mts_file: Path | None = None
-        self.out_dir: Path | None = None
+        self.output_path: Path | None = None
         self.worker: AnalysisWorker | None = None
         self.config = load_config()
         self._build_ui()
@@ -42,202 +42,214 @@ class MainWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setContentsMargins(36, 30, 36, 30)
         layout.setSpacing(18)
 
         title = QLabel("CrackVision-DIC")
-        title.setFont(QFont("Segoe UI", 24, QFont.Weight.Bold))
-        subtitle = QLabel(
-            "MTS 峰值拉应力时刻 → 最近 DIC 帧 → 主拉应变裂缝识别 → COD"
-        )
-        subtitle.setStyleSheet("color:#5f6368;font-size:13px;")
+        title.setFont(QFont("Segoe UI", 26, QFont.Weight.Bold))
+        subtitle = QLabel("峰值拉应力状态 · ECC / SHCC 裂缝宽度")
+        subtitle.setObjectName("subtitle")
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
-        form = QFormLayout()
-        form.setVerticalSpacing(14)
+        workflow = QLabel("Ncorr 位移/应变场  +  MTS 原始 CSV  →  自动定位峰值帧  →  裂缝 COD  →  Excel")
+        workflow.setObjectName("workflow")
+        workflow.setWordWrap(True)
+        layout.addWidget(workflow)
 
+        input_card = QFrame()
+        input_card.setObjectName("card")
+        card_layout = QVBoxLayout(input_card)
+        card_layout.setContentsMargins(20, 18, 20, 18)
+        card_layout.setSpacing(14)
+
+        card_layout.addWidget(self._section_label("1  Ncorr 数据"))
         data_row = QHBoxLayout()
         self.data_edit = QLineEdit()
         self.data_edit.setReadOnly(True)
-        choose_data = QPushButton("选择 H5 / MAT")
+        self.data_edit.setPlaceholderText("选择 CrackVision-Ncorr H5（推荐）或原始 MAT")
+        choose_data = QPushButton("选择文件")
         choose_data.clicked.connect(self._choose_data)
         data_row.addWidget(self.data_edit, 1)
         data_row.addWidget(choose_data)
-        form.addRow("Ncorr 数据", data_row)
+        card_layout.addLayout(data_row)
 
+        card_layout.addWidget(self._section_label("2  MTS 原始数据"))
         mts_row = QHBoxLayout()
         self.mts_edit = QLineEdit()
         self.mts_edit.setReadOnly(True)
-        choose_mts = QPushButton("选择 MTS CSV")
+        self.mts_edit.setPlaceholderText("选择同一试件的 MTS / DAQ CSV")
+        choose_mts = QPushButton("选择文件")
         choose_mts.clicked.connect(self._choose_mts)
         mts_row.addWidget(self.mts_edit, 1)
         mts_row.addWidget(choose_mts)
-        form.addRow("MTS 原始数据", mts_row)
+        card_layout.addLayout(mts_row)
 
-        out_row = QHBoxLayout()
-        self.out_edit = QLineEdit()
-        self.out_edit.setReadOnly(True)
-        choose_out = QPushButton("选择目录")
-        choose_out.clicked.connect(self._choose_out)
-        out_row.addWidget(self.out_edit, 1)
-        out_row.addWidget(choose_out)
-        form.addRow("输出目录", out_row)
+        hint = QLabel("MTS 与 DIC 同时开始，时间零点固定为 0 s；结果自动保存到 Ncorr 文件旁的 CrackVision_Output 文件夹。")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        card_layout.addWidget(hint)
+        layout.addWidget(input_card)
 
-        self.sync_spin = QDoubleSpinBox()
-        self.sync_spin.setDecimals(3)
-        self.sync_spin.setRange(-1_000_000.0, 1_000_000.0)
-        self.sync_spin.setSingleStep(0.5)
-        self.sync_spin.setValue(0.0)
-        self.sync_spin.setSuffix(" s")
-        self.sync_spin.setToolTip(
-            "填写 DIC 第0帧在 MTS 时间轴上的时刻。若相机与MTS同时开始，保持0。"
-        )
-        form.addRow("DIC 第0帧对应 MTS 时间", self.sync_spin)
-
-        self.scale_spin = QDoubleSpinBox()
-        self.scale_spin.setDecimals(6)
-        self.scale_spin.setRange(0.000001, 1000.0)
-        self.scale_spin.setSingleStep(0.001)
-        self.scale_spin.setValue(
-            float(self.config.get("experiment", {}).get("mm_per_pixel", 0.045))
-        )
-        self.scale_spin.setSuffix(" mm/px")
-        self.scale_spin.setToolTip(
-            "仅供旧 Ncorr MAT 缺少 pixtounits 时兜底；CrackVision H5 读取自身标定。"
-        )
-        form.addRow("尺度兜底", self.scale_spin)
-        layout.addLayout(form)
-
-        note = QLabel(
-            "程序直接读取 MTS CSV 中的“力”和“时间”。对于恒定截面的拉伸试件，"
-            "峰值拉应力与峰值拉力发生在同一时刻，因此无需输入截面积即可选择目标帧。"
-            "软件只计算与该时刻最接近的一帧 DIC 数据，并在 Excel 中记录时间匹配误差。"
-        )
-        note.setWordWrap(True)
-        note.setStyleSheet(
-            "background:#f5f7fa;border-radius:8px;padding:12px;color:#374151;"
-        )
-        layout.addWidget(note)
-
-        controls = QHBoxLayout()
         self.start_button = QPushButton("分析峰值拉应力帧")
-        self.start_button.setMinimumHeight(40)
+        self.start_button.setObjectName("primaryButton")
+        self.start_button.setMinimumHeight(46)
+        self.start_button.setEnabled(False)
         self.start_button.clicked.connect(self._start)
-        self.cancel_button = QPushButton("取消")
-        self.cancel_button.setEnabled(False)
-        self.cancel_button.clicked.connect(self._cancel)
-        controls.addWidget(self.start_button)
-        controls.addWidget(self.cancel_button)
-        controls.addStretch(1)
-        layout.addLayout(controls)
+        layout.addWidget(self.start_button)
 
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 1)
-        self.progress.setValue(0)
-        layout.addWidget(self.progress)
+        self.result_card = QFrame()
+        self.result_card.setObjectName("resultCard")
+        result_layout = QVBoxLayout(self.result_card)
+        result_layout.setContentsMargins(18, 16, 18, 16)
+        result_layout.setSpacing(8)
 
-        self.log_box = QTextEdit()
-        self.log_box.setReadOnly(True)
-        self.log_box.setPlaceholderText("峰值时刻、匹配帧和 COD 状态会显示在这里。")
-        layout.addWidget(self.log_box, 1)
+        self.status_label = QLabel("请选择 Ncorr 数据和对应的 MTS CSV。")
+        self.status_label.setObjectName("status")
+        self.status_label.setWordWrap(True)
+        result_layout.addWidget(self.status_label)
+
+        self.result_label = QLabel("")
+        self.result_label.setObjectName("resultText")
+        self.result_label.setWordWrap(True)
+        self.result_label.hide()
+        result_layout.addWidget(self.result_label)
+
+        self.open_button = QPushButton("打开结果文件夹")
+        self.open_button.setObjectName("secondaryButton")
+        self.open_button.clicked.connect(self._open_output_folder)
+        self.open_button.hide()
+        result_layout.addWidget(self.open_button, 0)
+        layout.addWidget(self.result_card)
+        layout.addStretch(1)
 
         self.setStyleSheet(
-            "QMainWindow{background:#ffffff;}"
-            "QPushButton{padding:8px 14px;}"
-            "QLineEdit,QDoubleSpinBox,QTextEdit{"
-            "border:1px solid #d7dce2;border-radius:6px;padding:7px;}"
-            "QProgressBar{height:12px;border:1px solid #d7dce2;"
-            "border-radius:6px;text-align:center;}"
+            "QMainWindow{background:#f7f8fa;}"
+            "QLabel#subtitle{color:#344054;font-size:14px;}"
+            "QLabel#workflow{color:#667085;font-size:12px;padding:4px 0 2px 0;}"
+            "QFrame#card,QFrame#resultCard{background:#ffffff;border:1px solid #e4e7ec;border-radius:10px;}"
+            "QLabel#sectionLabel{font-size:12px;font-weight:600;color:#344054;}"
+            "QLabel#hint{color:#667085;font-size:11px;}"
+            "QLabel#status{font-size:13px;font-weight:600;color:#344054;}"
+            "QLabel#resultText{font-size:12px;color:#475467;}"
+            "QLineEdit{background:#ffffff;border:1px solid #d0d5dd;border-radius:7px;padding:9px 10px;}"
+            "QPushButton{border:1px solid #d0d5dd;border-radius:7px;padding:8px 14px;background:#ffffff;}"
+            "QPushButton:hover{background:#f2f4f7;}"
+            "QPushButton#primaryButton{background:#1f4e78;color:#ffffff;border:none;font-weight:600;font-size:13px;}"
+            "QPushButton#primaryButton:hover{background:#173b5b;}"
+            "QPushButton#primaryButton:disabled{background:#98a2b3;color:#ffffff;}"
+            "QPushButton#secondaryButton{max-width:140px;}"
         )
+
+    @staticmethod
+    def _section_label(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("sectionLabel")
+        return label
 
     def _choose_data(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "选择 CrackVision-Ncorr H5 或原始 Ncorr MAT",
+            "选择 Ncorr 数据",
             "",
             FILE_DIALOG_FILTER,
         )
         if not file_path:
             return
         self.data_file = Path(file_path)
-        self.data_edit.setText(file_path)
-        if self.out_dir is None:
-            self.out_dir = self.data_file.parent / "CrackVision_Output"
-            self.out_edit.setText(str(self.out_dir))
+        self.data_edit.setText(self.data_file.name)
+        self.data_edit.setToolTip(str(self.data_file))
+        self.output_path = None
+        self._refresh_ready_state()
 
     def _choose_mts(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "选择 MTS / DAQ CSV",
             "",
-            "CSV files (*.csv);;All files (*)",
+            "CSV files (*.csv)",
         )
-        if file_path:
-            self.mts_file = Path(file_path)
-            self.mts_edit.setText(file_path)
+        if not file_path:
+            return
+        self.mts_file = Path(file_path)
+        self.mts_edit.setText(self.mts_file.name)
+        self.mts_edit.setToolTip(str(self.mts_file))
+        self.output_path = None
+        self._refresh_ready_state()
 
-    def _choose_out(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "选择输出目录")
-        if folder:
-            self.out_dir = Path(folder)
-            self.out_edit.setText(folder)
+    def _refresh_ready_state(self) -> None:
+        ready = self.data_file is not None and self.mts_file is not None and self.worker is None
+        self.start_button.setEnabled(ready)
+        self.open_button.hide()
+        self.result_label.hide()
+        if ready:
+            self.status_label.setText("输入已就绪。点击开始后只分析峰值拉应力对应的最近 DIC 帧。")
+        else:
+            self.status_label.setText("请选择 Ncorr 数据和对应的 MTS CSV。")
 
     def _start(self) -> None:
-        if self.data_file is None:
-            QMessageBox.warning(self, "缺少输入", "请选择 Ncorr H5 / MAT 文件。")
-            return
-        if self.mts_file is None:
-            QMessageBox.warning(self, "缺少 MTS", "请选择该试件对应的 MTS CSV 文件。")
-            return
-        if self.out_dir is None:
-            QMessageBox.warning(self, "缺少输出目录", "请选择输出目录。")
+        if self.data_file is None or self.mts_file is None:
             return
 
-        run_config = with_mm_per_pixel(self.config, float(self.scale_spin.value()))
+        out_dir = self.data_file.parent / "CrackVision_Output"
         self.worker = AnalysisWorker(
             self.data_file,
             self.mts_file,
-            self.out_dir,
-            run_config,
-            float(self.sync_spin.value()),
+            out_dir,
+            self.config,
         )
-        self.worker.progress.connect(self._on_progress)
-        self.worker.log.connect(self._append_log)
+        self.worker.completed.connect(self._on_completed)
         self.worker.failed.connect(self._on_failed)
         self.worker.finished.connect(self._on_finished)
 
-        self.progress.setRange(0, 1)
-        self.progress.setValue(0)
-        self.log_box.clear()
         self.start_button.setEnabled(False)
-        self.cancel_button.setEnabled(True)
+        self.start_button.setText("分析中…")
+        self.open_button.hide()
+        self.result_label.hide()
+        self.status_label.setText("正在读取 MTS 峰值并计算对应 DIC 帧的全部裂缝宽度…")
         self.worker.start()
 
-    def _cancel(self) -> None:
-        if self.worker is not None:
-            self.worker.stop()
-            self._append_log("Cancelling...")
+    @staticmethod
+    def _fmt(value: object, digits: int = 1) -> str:
+        if value is None:
+            return "—"
+        try:
+            return f"{float(value):.{digits}f}"
+        except (TypeError, ValueError):
+            return str(value)
 
-    def _on_progress(self, current: int, total: int) -> None:
-        self.progress.setRange(0, total)
-        self.progress.setValue(current)
+    def _on_completed(self, result: dict) -> None:
+        self.output_path = Path(result["output_path"])
+        status = result.get("cod_status", "unknown")
+        crack_count = int(result.get("crack_count", 0))
 
-    def _append_log(self, text: str) -> None:
-        self.log_box.append(text)
-        bar = self.log_box.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        self.status_label.setText("✓ 分析完成" if status == "ok" else f"分析完成，但 COD 状态为：{status}")
+        self.result_label.setText(
+            f"峰值拉力 {self._fmt(result.get('peak_force_N'))} N @ {self._fmt(result.get('peak_time_s'), 3)} s  ·  "
+            f"DIC Frame {result.get('selected_frame', '—')}  ·  Δt {self._fmt(result.get('match_error_s'), 3)} s\n"
+            f"有效裂缝 {crack_count} 条  ·  平均 {self._fmt(result.get('mean_width_um'))} μm  ·  "
+            f"P95 {self._fmt(result.get('p95_width_um'))} μm  ·  最大 {self._fmt(result.get('max_width_um'))} μm\n"
+            f"Excel：{self.output_path}"
+        )
+        self.result_label.show()
+        self.open_button.show()
 
     def _on_failed(self, message: str) -> None:
+        self.status_label.setText("分析失败")
         QMessageBox.critical(self, "分析失败", message)
 
     def _on_finished(self) -> None:
-        self.start_button.setEnabled(True)
-        self.cancel_button.setEnabled(False)
         self.worker = None
+        self.start_button.setText("重新分析")
+        self.start_button.setEnabled(self.data_file is not None and self.mts_file is not None)
+
+    def _open_output_folder(self) -> None:
+        if self.output_path is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.output_path.parent)))
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         if self.worker is not None and self.worker.isRunning():
-            self.worker.stop()
-            self.worker.wait(1500)
+            QMessageBox.information(self, "正在分析", "当前分析尚未完成，请等待结果生成后再关闭。")
+            event.ignore()
+            return
         event.accept()

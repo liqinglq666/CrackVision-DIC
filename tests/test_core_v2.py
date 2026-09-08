@@ -110,15 +110,15 @@ def test_failed_cod_remains_nan_in_export_table():
             {
                 "Frame": 0,
                 "cod_status": "insufficient_cod_samples",
-                "W_median_mm": np.nan,
-                "W_avg_mm": np.nan,
-                "W_95_mm": np.nan,
-                "W_max_mm": np.nan,
+                "Crack_width_mean_mm": np.nan,
+                "Crack_width_median_mm": np.nan,
+                "Crack_width_95_mm": np.nan,
+                "Crack_width_max_mm": np.nan,
             }
         ]
     )
-    assert np.isnan(df.loc[0, "W_median_um"])
-    assert np.isnan(df.loc[0, "W_max_um"])
+    assert np.isnan(df.loc[0, "Crack_width_mean_um"])
+    assert np.isnan(df.loc[0, "Crack_width_max_um"])
 
 
 def test_classic_ncorr_mat_loader_reads_full_tensor_and_scale(tmp_path):
