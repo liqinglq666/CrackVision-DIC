@@ -131,7 +131,7 @@ class MainWindow(QMainWindow):
             "QLabel#sectionLabel{font-size:12px;font-weight:600;color:#344054;}"
             "QLabel#hint{color:#667085;font-size:11px;}"
             "QLabel#status{font-size:13px;font-weight:600;color:#344054;}"
-            "QLabel#resultText{font-size:12px;color:#475467;line-height:1.4;}"
+            "QLabel#resultText{font-size:12px;color:#475467;}"
             "QLineEdit{background:#ffffff;border:1px solid #d0d5dd;border-radius:7px;padding:9px 10px;}"
             "QPushButton{border:1px solid #d0d5dd;border-radius:7px;padding:8px 14px;background:#ffffff;}"
             "QPushButton:hover{background:#f2f4f7;}"
@@ -223,11 +223,7 @@ class MainWindow(QMainWindow):
         status = result.get("cod_status", "unknown")
         crack_count = int(result.get("crack_count", 0))
 
-        if status == "ok":
-            self.status_label.setText("✓ 分析完成")
-        else:
-            self.status_label.setText(f"分析完成，但 COD 状态为：{status}")
-
+        self.status_label.setText("✓ 分析完成" if status == "ok" else f"分析完成，但 COD 状态为：{status}")
         self.result_label.setText(
             f"峰值拉力 {self._fmt(result.get('peak_force_N'))} N @ {self._fmt(result.get('peak_time_s'), 3)} s  ·  "
             f"DIC Frame {result.get('selected_frame', '—')}  ·  Δt {self._fmt(result.get('match_error_s'), 3)} s\n"
@@ -253,5 +249,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         if self.worker is not None and self.worker.isRunning():
-            self.worker.wait(1500)
+            QMessageBox.information(self, "正在分析", "当前分析尚未完成，请等待结果生成后再关闭。")
+            event.ignore()
+            return
         event.accept()
