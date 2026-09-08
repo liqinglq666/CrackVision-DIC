@@ -39,6 +39,8 @@ jobs:
         run: pytest -q
 
       - name: Run CrackVision-DIC and capture real screenshots
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           mkdir -p artifacts/softreg
           xvfb-run -a python tools/softreg_capture.py --out artifacts/softreg
