@@ -1,34 +1,33 @@
 experiment:
-  # Used only when the MAT file does not contain Ncorr pixtounits.
+  # Fallback only for original Ncorr MAT files that lack pixtounits.
   mm_per_pixel: 0.045
 
-  # Used only when the MAT file does not contain Ncorr spacing metadata.
+  # Fallback only when original MAT lacks Ncorr spacing metadata.
   dic_step_px: 3.0
 
-  # Native Ncorr stores the number of skipped pixels; centre-to-centre step = spacing + 1.
+  # Native Ncorr spacing is a skipped-pixel count: centre step = spacing + 1.
   ncorr_spacing_is_gap_count: true
 
-  # Used only when a frame timestamp is absent.
-  sampling_interval_s: 1.0
+  # Fallback for old MAT files without timestamps. Your current acquisition is 5 s/image.
+  sampling_interval_s: 5.0
 
 physics:
-  # Ncorr exy is treated as a tensor shear strain by default.
+  # Ncorr reference-formatted Exy is a tensor Green-Lagrange shear component.
   shear_component_is_engineering: false
 
   detection:
-    # Threshold = median(eps1) + k * 1.4826 * MAD(eps1), clipped below/above.
     threshold_k: 2.0
     min_tensile_strain: 0.0002
     max_threshold: 0.05
 
-    # ECC/SHCC fine cracks need permissive morphology; width filtering happens later.
+    # ECC/SHCC fine cracks: permissive candidate morphology; COD filters later.
     min_crack_area_points: 4
     closing_radius_points: 0
     min_crack_length_mm: 0.15
     normal_radius_points: 4
 
   cod:
-    # Sample both crack faces over a physical distance window, then linearly extrapolate to the crack plane.
+    # Sample both crack faces over a physical distance window and extrapolate to the crack plane.
     near_mm: 0.15
     far_mm: 0.75
     samples_per_side: 7
@@ -36,7 +35,6 @@ physics:
     sample_stride_points: 1
     min_samples_per_crack: 3
 
-    # Physical acceptance range. Values below the lower bound are treated as non-open candidates.
     min_width_mm: 0.001
     max_width_mm: 2.0
 
