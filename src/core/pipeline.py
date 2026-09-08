@@ -25,16 +25,9 @@ class PeakFrameSelection:
 @dataclass(slots=True)
 class AnalysisResult:
     input_path: Path
-    mts_path: Path
     frame_df: pd.DataFrame
     crack_df: pd.DataFrame
     selection: PeakFrameSelection
-
-    @property
-    def cod_status(self) -> str:
-        if self.frame_df.empty or "cod_status" not in self.frame_df:
-            return "unknown"
-        return str(self.frame_df.iloc[0]["cod_status"])
 
 
 def apply_equal_weight_crack_summary(
@@ -51,7 +44,7 @@ def apply_equal_weight_crack_summary(
     ):
         out[field] = float("nan")
 
-    if details is None or details.empty or "W_median_mm" not in details.columns:
+    if details.empty or "W_median_mm" not in details.columns:
         return out
 
     widths = pd.to_numeric(details["W_median_mm"], errors="coerce").to_numpy(dtype=float)
@@ -75,11 +68,7 @@ def analyze_peak_frame(
     mts_csv_path: Path,
     config: dict[str, Any],
 ) -> AnalysisResult:
-    """Analyse only the DIC frame nearest to the MTS peak tensile-force time.
-
-    MTS recording and image acquisition are assumed to start together, so both
-    time axes share t=0 and no synchronization offset is exposed to the user.
-    """
+    """Analyse only the DIC frame nearest to the MTS peak tensile-force time."""
     mts_peak: MtsPeak = read_mts_peak(Path(mts_csv_path))
     selected: SelectedFrame = select_nearest_frame(
         Path(data_path), config, float(mts_peak.peak_time_s)
@@ -101,7 +90,6 @@ def analyze_peak_frame(
     summary.update(
         {
             "Time_s": float(selected.dic_time_s),
-            "time_source": selected.time_source,
             "MTS_peak_force_N": float(mts_peak.peak_force_N),
             "MTS_peak_time_s": float(mts_peak.peak_time_s),
             "DIC_selected_time_s": float(selected.dic_time_s),
@@ -111,9 +99,8 @@ def analyze_peak_frame(
 
     return AnalysisResult(
         input_path=Path(data_path),
-        mts_path=Path(mts_csv_path),
-        frame_df=prepare_frame_summary([summary]),
-        crack_df=prepare_crack_details([details] if not details.empty else []),
+        frame_df=prepare_frame_summary(summary),
+        crack_df=prepare_crack_details(details),
         selection=selection,
     )
 
