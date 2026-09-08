@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.core.config import load_config, with_mm_per_pixel
+from src.core.input import FILE_DIALOG_FILTER
 from src.gui.worker import AnalysisWorker
 
 
@@ -134,9 +135,7 @@ class MainWindow(QMainWindow):
             self,
             "选择 CrackVision-Ncorr H5 或原始 Ncorr MAT",
             "",
-            "Ncorr data (*.h5 *.hdf5 *.mat);;"
-            "CrackVision-Ncorr H5 (*.h5 *.hdf5);;"
-            "Original Ncorr MAT (*.mat)",
+            FILE_DIALOG_FILTER,
         )
         if not files:
             return
