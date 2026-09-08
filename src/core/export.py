@@ -8,7 +8,24 @@ import pandas as pd
 from openpyxl.utils import get_column_letter
 
 
-WIDTH_COLUMNS_MM = ("W_median_mm", "W_avg_mm", "W_95_mm", "W_max_mm")
+FRAME_WIDTH_COLUMNS_MM = (
+    "W_median_mm",
+    "W_avg_mm",
+    "W_95_mm",
+    "W_max_mm",
+    "Crack_width_mean_mm",
+    "Crack_width_median_mm",
+    "Crack_width_95_mm",
+    "Crack_width_max_mm",
+)
+
+CRACK_DETAIL_COLUMNS_MM = (
+    "W_median_mm",
+    "W_avg_mm",
+    "W_95_mm",
+    "W_max_mm",
+    "Slip_median_mm",
+)
 
 
 def prepare_frame_summary(rows: Iterable[dict]) -> pd.DataFrame:
@@ -16,7 +33,7 @@ def prepare_frame_summary(rows: Iterable[dict]) -> pd.DataFrame:
     df = pd.DataFrame(list(rows))
     if df.empty:
         return df
-    for col in WIDTH_COLUMNS_MM:
+    for col in FRAME_WIDTH_COLUMNS_MM:
         if col not in df.columns:
             df[col] = np.nan
         df[col.replace("_mm", "_um")] = (
@@ -30,13 +47,7 @@ def prepare_crack_details(tables: Iterable[pd.DataFrame]) -> pd.DataFrame:
     if not valid:
         return pd.DataFrame()
     df = pd.concat(valid, ignore_index=True)
-    for col in (
-        "W_median_mm",
-        "W_avg_mm",
-        "W_95_mm",
-        "W_max_mm",
-        "Slip_median_mm",
-    ):
+    for col in CRACK_DETAIL_COLUMNS_MM:
         if col in df.columns:
             df[col.replace("_mm", "_um")] = (
                 pd.to_numeric(df[col], errors="coerce") * 1000.0
@@ -71,6 +82,8 @@ def build_qa(frame_df: pd.DataFrame) -> pd.DataFrame:
         "dic_step_px",
         "dic_point_spacing_mm",
         "metadata_source",
+        "crack_width_basis",
+        "crack_representative_count",
     ):
         if col in frame_df.columns:
             first = frame_df[col].dropna()
@@ -92,7 +105,9 @@ def export_workbook(
             "Item": [
                 "Selected state",
                 "Frame matching",
-                "Primary width",
+                "Per-crack representative width",
+                "Specimen average crack width",
+                "Frame-summary compatibility fields",
                 "Failure semantics",
                 "Crack detection",
                 "COD method",
@@ -101,7 +116,9 @@ def export_workbook(
             "Meaning": [
                 "Only the DIC frame nearest to the MTS peak tensile-force/stress time is analysed",
                 "frame_match_error_s = selected-frame MTS-equivalent time minus true MTS peak time",
-                "W_median_um / W_avg_um from DIC displacement discontinuity",
+                "Each row in 02_Crack_Details is one accepted crack; W_median_um is that crack's representative width",
+                "Crack_width_mean_um = arithmetic mean of all accepted cracks' W_median_um values; every crack has equal weight",
+                "Frame-level W_avg/W_median/W_95/W_max are aliases of the same equal-weight per-crack representative-width distribution",
                 "NaN means not measurable; it is never silently converted to zero",
                 "Maximum principal tensile strain from Exx/Eyy/Exy",
                 "Multi-point linear fits on both crack faces extrapolated to the crack plane",
