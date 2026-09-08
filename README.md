@@ -16,25 +16,25 @@
 
 ## 项目简介 · Overview
 
-**CrackVision-DIC** 是一个用于 **ECC / SHCC 单轴拉伸 Digital Image Correlation (DIC)** 后处理的专用科研工具。
+**CrackVision-DIC** 是一个专门用于 **ECC / SHCC 单轴拉伸 Digital Image Correlation (DIC)** 后处理的科研工具。
 
 项目只解决一个明确问题：
 
-> **从 MTS 原始拉伸数据自动定位峰值拉应力时刻，匹配最近的 Ncorr DIC frame，并基于该帧的位移场与应变场提取全部有效裂缝的 Crack Opening Displacement (COD)。**
+> **从 MTS 原始拉伸数据中自动定位 Peak Tensile Stress 对应时刻，匹配最近的 Ncorr DIC frame，并基于该帧位移场与应变场提取全部有效裂缝的 Crack Opening Displacement (COD)。**
 
-最终得到：
+最终输出：
 
 - 峰值拉应力对应的 DIC frame；
 - 峰值状态下全部有效裂缝的代表宽度；
 - specimen-level 平均 / 中位 / P95 / 最大裂缝宽度；
-- 时间匹配、尺度、阈值等 QA 信息；
+- 时间匹配、尺度、阈值、有效区等 QA 信息；
 - 可直接用于论文整理的 Excel workbook。
 
-当前实验条件假定 **MTS 与图像采集同时开始**：
+当前实验条件假定：
 
-$$
-t_{\mathrm{MTS},0}=t_{\mathrm{DIC},0}=0
-$$
+```text
+MTS t = 0 s  ⇔  DIC frame 0 = 0 s
+```
 
 因此 GUI 中不再提供人为 synchronization offset。
 
@@ -70,9 +70,25 @@ flowchart TD
     R --> S[Paper-ready Excel]
 ```
 
-核心计算链可以概括为：
+核心计算链：
 
-**MTS Peak State → DIC Frame → 最大主拉应变 → Crack Geometry → Displacement Jump → COD**
+```text
+MTS Peak State
+    ↓
+DIC Peak Frame
+    ↓
+Maximum Principal Tensile Strain
+    ↓
+Crack Geometry
+    ↓
+Displacement Jump along Local Normal
+    ↓
+COD
+    ↓
+Crack-wise Representative Width
+    ↓
+Equal-weight Specimen Statistics
+```
 
 ---
 
@@ -80,21 +96,21 @@ flowchart TD
 
 ## 1.1 为什么只需要峰值拉力时刻
 
-对于名义截面积 $A$ 固定的拉伸试件：
+对名义截面积 `A` 固定的拉伸试件：
 
-$$
-\sigma(t)=\frac{F(t)}{A}
-$$
+```text
+σ(t) = F(t) / A
+```
 
-因此峰值拉应力与峰值拉力出现在同一时刻：
+因为 `A` 为常数，所以：
 
-$$
-\underset{t}{\arg\max}\;\sigma(t)
-=
-\underset{t}{\arg\max}\;F(t)
-$$
+```text
+arg max_t σ(t) = arg max_t F(t)
+```
 
-所以 CrackVision-DIC 在选择目标 DIC frame 时，只需要 MTS 的：
+也就是说，**Peak Tensile Stress 与 Peak Tensile Force 出现在同一时刻**。
+
+因此 CrackVision-DIC 在选择目标 DIC frame 时，只需要 MTS 中的：
 
 ```text
 Force
@@ -103,42 +119,41 @@ Time
 
 不需要额外输入试件截面积。
 
-对于不同 MTS 导出格式，拉伸方向可能记为正值或负值。程序先判断 tension sign $s\in\{-1,+1\}$，再确定峰值时刻：
+对于不同 MTS 导出格式，拉伸方向可能记为正值或负值。程序先判断 tension sign：
 
-$$
-t_{\mathrm{peak}}
-=
-\underset{t}{\arg\max}\;[sF(t)]
-$$
+```text
+s ∈ {-1, +1}
+```
 
-MTS 在本项目中只负责 **确定 Peak Tensile Stress 对应时刻**，不参与 COD 计算。
+再确定峰值时刻：
+
+```text
+t_peak = arg max_t [s · F(t)]
+```
+
+MTS 在本项目中只负责**确定 Peak Tensile Stress 对应时刻**，不参与 COD 计算。
 
 ## 1.2 峰值时刻与 DIC frame 匹配
 
-设 DIC 帧时间为：
+设 DIC 时间轴为：
 
-$$
-t_0^{\mathrm{DIC}},\;t_1^{\mathrm{DIC}},\;\ldots,\;t_{N-1}^{\mathrm{DIC}}
-$$
+```text
+t_DIC(0), t_DIC(1), ..., t_DIC(N-1)
+```
 
-程序选择距离峰值时刻最近的一帧：
+程序选择距离 MTS 峰值时刻最近的一帧：
 
-$$
-k^*
-=
-\underset{k}{\arg\min}\;
-\left|t_k^{\mathrm{DIC}}-t_{\mathrm{peak}}\right|
-$$
+```text
+k* = arg min_k |t_DIC(k) - t_peak|
+```
 
-时间匹配误差定义为：
+时间匹配误差：
 
-$$
-\Delta t
-=
-t_{k^*}^{\mathrm{DIC}}-t_{\mathrm{peak}}
-$$
+```text
+Δt = t_DIC(k*) - t_peak
+```
 
-对于当前 **5 s / image** 的采集方式，如果 MTS 与相机同步起始，nearest-frame matching 的绝对误差通常不超过约半个采样间隔。
+对于当前 **5 s / image** 的采集方式，只要 MTS 与相机同步起始，nearest-frame matching 的绝对误差通常不超过约半个采样间隔。
 
 ```mermaid
 sequenceDiagram
@@ -147,9 +162,9 @@ sequenceDiagram
     participant DIC as Ncorr Data
 
     MTS->>CV: Force(t), Time
-    CV->>CV: Find peak time
+    CV->>CV: Find t_peak
     DIC->>CV: DIC frame times
-    CV->>CV: Match nearest frame
+    CV->>CV: Find nearest frame k*
     CV->>DIC: Read selected frame
     DIC-->>CV: U, V, Exx, Eyy, Exy, mask
 ```
@@ -158,11 +173,11 @@ sequenceDiagram
 
 # 2. Ncorr 数据接口 · Data Contract
 
-对于新试验，推荐使用 CrackVision 专用的 **compact HDF5 bridge**，而不是直接解析体积很大的 Ncorr `.mat`。
+对于新试验，推荐使用 CrackVision 专用 **compact HDF5 bridge**，避免 Python 直接解析体积很大的原始 Ncorr `.mat`。
 
 ## 2.1 推荐导出方式
 
-完成 Ncorr 的：
+完成 Ncorr：
 
 ```text
 DIC Analysis
@@ -171,7 +186,7 @@ DIC Analysis
 → Calculate Strains
 ```
 
-之后在 MATLAB 中运行：
+然后在 MATLAB 中运行：
 
 ```matlab
 handles_ncorr = ncorr;
@@ -226,30 +241,38 @@ plot_eyy_ref_formatted
 plot_exy_ref_formatted
 ```
 
-这样可以避免不同 configuration 的位移场与应变场混用。
+这样可以避免不同 configuration 的 displacement / strain field 混用。
 
 ## 2.3 Ncorr spacing 与物理网格间距
 
-Ncorr 原生 `spacing` 按 skipped-pixel count 处理，因此 DIC subset centre step 为：
+Ncorr 原生 `spacing` 按 skipped-pixel count 处理，因此：
 
-$$
-\Delta p_{\mathrm{DIC}}
-=
-\mathrm{spacing}_{\mathrm{Ncorr}}+1
-$$
+```text
+DIC centre step (px) = Ncorr spacing + 1
+```
 
-若图像尺度为 $p=\mathrm{pixel\_size\_mm}$，则 DIC 网格物理间距为：
+记作：
 
-$$
-\Delta x_{\mathrm{DIC}}
-=
-p\,\Delta p_{\mathrm{DIC}}
-$$
+```text
+Δp_DIC = spacing_Ncorr + 1
+```
 
-需要区分：
+若图像尺度为：
 
-- `pixel_size_mm`：位移 pixel → mm 的尺度；
-- `dic_point_spacing_mm`：DIC grid index → physical distance 的尺度。
+```text
+p = pixel_size_mm   [mm/pixel]
+```
+
+则 DIC 网格物理间距：
+
+```text
+Δx_DIC = p · Δp_DIC   [mm/point]
+```
+
+这里必须区分：
+
+- `pixel_size_mm`：displacement pixel → mm；
+- `dic_point_spacing_mm`：DIC grid index → physical distance。
 
 两者相关，但不是同一个量。
 
@@ -257,92 +280,75 @@ $$
 
 # 3. 裂缝定位 · Maximum Principal Tensile Strain
 
-裂缝定位不直接依赖单一 $E_{xx}$ 或 $E_{yy}$，而使用 **Maximum Principal Tensile Strain**。
+裂缝定位不直接依赖单一 `Exx` 或 `Eyy`，而使用 **Maximum Principal Tensile Strain**。
 
-二维 Green-Lagrange strain tensor 为：
+二维 Green-Lagrange strain tensor 对应的最大主拉应变为：
 
-$$
-\mathbf{E}=
-\begin{bmatrix}
-E_{xx} & E_{xy}\\
-E_{xy} & E_{yy}
-\end{bmatrix}
-$$
+```text
+ε1 = (Exx + Eyy) / 2
+     + sqrt( ((Exx - Eyy) / 2)^2 + Exy^2 )
+```
 
-最大主拉应变：
+当前 Ncorr bridge 中，`Exy` 按 **tensor Green-Lagrange shear component** 处理，而不是 engineering shear strain。
 
-$$
-\varepsilon_1
-=
-\frac{E_{xx}+E_{yy}}{2}
-+
-\sqrt{
-\left(\frac{E_{xx}-E_{yy}}{2}\right)^2
-+E_{xy}^2
-}
-$$
-
-当前 Ncorr bridge 中，$E_{xy}$ 按 **tensor Green-Lagrange shear component** 处理，而不是 engineering shear strain。
-
-采用 $\varepsilon_1$ 的原因是：ECC / SHCC 裂缝可能水平、竖直或倾斜，最大主拉应变对全局坐标方向更不敏感，更适合进行 crack localization。
+采用 `ε1` 的原因是：ECC / SHCC 裂缝可能水平、竖直或倾斜；Maximum Principal Tensile Strain 对全局坐标方向更不敏感，更适合 orientation-independent crack localization。
 
 ---
 
 # 4. 自适应阈值 · Robust Adaptive Threshold
 
-CrackVision-DIC 不使用单一固定阈值直接判定裂缝，而是根据当前峰值帧的应变背景自动计算 threshold。
+CrackVision-DIC 不使用单一固定 strain threshold 直接判裂缝，而是根据峰值帧背景应变自动计算 threshold。
 
-设有效区域内最大主拉应变为 $\varepsilon_{1,i}$，首先计算：
+首先计算背景中位数：
 
-$$
-m=\mathrm{median}(\varepsilon_1)
-$$
+```text
+m = median(ε1)
+```
 
-$$
-\mathrm{MAD}
-=
-\mathrm{median}\left(|\varepsilon_1-m|\right)
-$$
+Median Absolute Deviation：
 
-robust scale 为：
+```text
+MAD = median( |ε1 - m| )
+```
 
-$$
-\hat{\sigma}_r
-=
-1.4826\,\mathrm{MAD}
-$$
+robust scale：
 
-原始 threshold：
+```text
+σ_robust = 1.4826 · MAD
+```
 
-$$
-T_{\mathrm{raw}}
-=
-m+k\hat{\sigma}_r
-$$
+原始阈值：
 
-当前默认 $k=2.0$。
+```text
+T_raw = m + k · σ_robust
+```
 
-最终阈值限制为：
+当前默认：
 
-$$
-T
-=
-\mathrm{clip}\left(
-T_{\mathrm{raw}},
-2\times10^{-4},
-5\times10^{-2}
-\right)
-$$
+```text
+k = 2.0
+```
+
+最终 threshold：
+
+```text
+T = clip(T_raw, 2e-4, 5e-2)
+```
 
 候选 crack region 满足：
 
-$$
-\varepsilon_1\ge T
-\quad\text{and}\quad
-\varepsilon_1>0
-$$
+```text
+ε1 ≥ T  and  ε1 > 0
+```
 
-随后执行 small-object removal、skeletonization 和 connected-component labeling。
+随后执行：
+
+```text
+Small-object Removal
+→ Skeletonization
+→ Connected-component Labeling
+→ Minimum Length Filter
+```
 
 当前默认：
 
@@ -353,9 +359,9 @@ min_crack_length_mm   = 0.15 mm
 
 ```mermaid
 flowchart TD
-    A[Exx / Eyy / Exy] --> B[Maximum Principal Strain]
+    A[Exx / Eyy / Exy] --> B[Maximum Principal Strain ε1]
     B --> C[Median + MAD]
-    C --> D[Adaptive Threshold]
+    C --> D[Adaptive Threshold T]
     D --> E[Candidate Region]
     E --> F[Remove Small Objects]
     F --> G[Skeletonization]
@@ -367,125 +373,116 @@ flowchart TD
 
 # 5. 局部裂缝坐标系 · Local Crack Coordinate System
 
-对于每个 crack skeleton point，程序根据邻域 skeleton coordinates 估计局部切向方向。
+对每个 crack skeleton point，程序根据邻域 skeleton coordinates 的 covariance / eigenvector 估计局部 tangent。
 
-设单位切向量为：
+设单位切向量：
 
-$$
-\mathbf{t}=
-\begin{bmatrix}
-t_x\\t_y
-\end{bmatrix}
-$$
+```text
+t = (tx, ty)
+```
 
-局部单位法向量为：
+则单位法向量：
 
-$$
-\mathbf{n}=
-\begin{bmatrix}
--t_y\\t_x
-\end{bmatrix}
-$$
+```text
+n = (-ty, tx)
+```
 
-因此裂缝宽度沿 **local crack normal** 测量，而不是机械地沿全局 $x$ 或 $y$ 方向测量。
+因此裂缝宽度始终沿 **local crack normal** 测量，而不是机械地沿全局 `x` 或 `y` 方向测量。
+
+这对 ECC / SHCC 中大量倾斜细裂缝尤其重要。
 
 ---
 
 # 6. COD 计算 · Bilateral Displacement Regression
 
-> **应变场负责“找裂缝”，裂缝宽度本身来自 displacement discontinuity，而不是高应变带的视觉厚度。**
+> **应变场负责“找裂缝”；裂缝宽度本身来自 displacement discontinuity，而不是高应变带的视觉厚度。**
 
-对 DIC displacement vector：
+设 DIC displacement vector：
 
-$$
-\mathbf{u}=
-\begin{bmatrix}
-u\\v
-\end{bmatrix}
-$$
+```text
+u_vec = (u, v)
+```
 
-法向位移分量为：
+沿 local normal 的位移分量：
 
-$$
-u_n
-=
-\mathbf{u}\cdot\mathbf{n}
-=
-un_x+vn_y
-$$
+```text
+u_n = u · nx + v · ny
+```
 
-切向位移分量为：
+沿 local tangent 的位移分量：
 
-$$
-u_t
-=
-\mathbf{u}\cdot\mathbf{t}
-=
--un_y+vn_x
-$$
+```text
+u_t = -u · ny + v · nx
+```
 
-其中 $u_n$ 用于 Crack Opening Displacement，$u_t$ 作为 tangential slip diagnostic。
+其中：
+
+- `u_n` → Crack Opening Displacement；
+- `u_t` → tangential slip diagnostic。
 
 ## 6.1 裂缝两侧采样
 
-每个 skeleton point 沿 crack normal 两侧采样，默认物理距离范围：
+每个 skeleton point 沿 crack normal 两侧采样。
 
-$$
-0.15\;\mathrm{mm}
-\le |s| \le
-0.75\;\mathrm{mm}
-$$
+默认物理采样范围：
 
-当前默认参数：
+```text
+0.15 mm ≤ |s| ≤ 0.75 mm
+```
+
+当前默认：
 
 ```text
 samples_per_side   = 7
 min_valid_per_side = 3
 ```
 
-## 6.2 双侧线性拟合
+## 6.2 双侧鲁棒拟合
 
-裂缝正、负两侧分别拟合 normal displacement：
+正、负两侧分别拟合 normal displacement：
 
-$$
-u_n^+(s)=a_+s+b_+
-$$
+```text
+u_n+(s) = a+ · s + b+
+u_n-(s) = a- · s + b-
+```
 
-$$
-u_n^-(s)=a_-s+b_-
-$$
+拟合过程中使用 residual MAD 进行 robust filtering。
 
-拟合过程中使用 residual MAD 进行 robust filtering，默认保留规则等价于：
+默认残差保留规则：
 
-$$
-|r_i-\tilde r|
-\le
-3.5\hat{\sigma}_r
-$$
+```text
+|r_i - median(r)| ≤ 3.5 · σ_robust
+```
 
-从而降低少量 DIC 异常点对 COD 的影响。
+这样可以降低少量 DIC interpolation / correlation 异常点对最终 COD 的影响。
 
 ## 6.3 外推到 Crack Plane
 
-在 crack plane 上 $s=0$：
+在 crack plane：
 
-$$
-u_n^+(0)=b_+
-$$
+```text
+s = 0
+```
 
-$$
-u_n^-(0)=b_-
-$$
+两侧法向位移分别为：
 
-因此 local COD 为：
+```text
+u_n+(0) = b+
+u_n-(0) = b-
+```
 
-$$
-\mathrm{COD}
-=
-|b_+-b_-|
-$$
+因此 local COD：
 
-随后依据 Ncorr displacement scale 转换为 mm / μm。
+```text
+COD_px = |b+ - b-|
+```
+
+位移场在 `FrameData` 中以 image-pixel displacement 保存，因此物理宽度为：
+
+```text
+COD_mm = COD_px · pixel_size_mm
+COD_μm = COD_mm · 1000
+```
 
 ```mermaid
 flowchart TD
@@ -494,110 +491,113 @@ flowchart TD
     B --> D[Sample Negative Side]
     C --> E[Project U,V onto Normal]
     D --> F[Project U,V onto Normal]
-    E --> G[Robust Line Fit]
-    F --> H[Robust Line Fit]
+    E --> G[Robust Line Fit +]
+    F --> H[Robust Line Fit -]
     G --> I[Extrapolate to s = 0]
     H --> I
-    I --> J[COD = abs(b+ - b-)]
+    I --> J[COD = abs b+ - b-]
 ```
 
 ---
 
 # 7. 每条裂缝的代表宽度 · Crack-level Width
 
-一条物理裂缝通常包含多个有效 local COD：
+一条实际裂缝通常包含多个有效 local COD：
 
-$$
-w_{j,1},\;w_{j,2},\;\ldots,\;w_{j,m_j}
-$$
+```text
+Crack j:
+w_j,1 , w_j,2 , ... , w_j,m
+```
 
-其中 $j$ 为 Crack ID。
+当前至少需要：
 
-当前要求每条裂缝至少有 3 个有效 COD samples：
+```text
+m ≥ 3
+```
 
-$$
-m_j\ge3
-$$
+该裂缝才进入最终统计。
 
-每条裂缝的代表宽度定义为：
+单条裂缝的代表宽度定义为：
 
-$$
-w_j
-=
-\mathrm{median}_i\left(w_{j,i}\right)
-$$
+```text
+W_crack(j) = median( local COD values of crack j )
+```
 
-也就是：
+选择 median 而不是单点宽度的原因：
 
-> **一条裂缝 = 一个代表宽度；代表宽度 = 该裂缝沿线所有有效 local COD 的中位数。**
+- ECC 裂缝沿长度方向并非完全等宽；
+- 单个 DIC 点可能受到局部散斑质量影响；
+- median 对少量异常 COD 更稳健；
+- 每条裂缝最终只得到一个明确的 representative width。
 
-`02_裂缝明细` 中的 **代表宽度 (μm)** 就是 $w_j$。
+当前默认物理接受范围：
+
+```text
+1 μm ≤ W_crack ≤ 2 mm
+```
+
+Excel `02_裂缝明细` 中的 **代表宽度 (μm)** 就是该值。
 
 ---
 
 # 8. 试件级统计 · Equal-weight Specimen Statistics
 
-若峰值拉应力 frame 中识别出 $N_c$ 条有效裂缝，其代表宽度为：
+假设峰值拉应力帧最终识别出 `Nc` 条有效裂缝：
 
-$$
-w_1,\;w_2,\;\ldots,\;w_{N_c}
-$$
+```text
+W1, W2, W3, ..., WNc
+```
 
-每条裂缝统计权重完全相同，不因 crack length 或 COD sample count 不同而改变。
+每条裂缝只贡献一个代表宽度，因此所有裂缝具有**相同统计权重**。
 
 平均裂缝宽度：
 
-$$
-\bar w
-=
-\frac{1}{N_c}
-\sum_{j=1}^{N_c}w_j
-$$
+```text
+W_mean = (W1 + W2 + ... + WNc) / Nc
+```
 
-同时输出：
-
-$$
-w_{50}=\mathrm{median}(w_j)
-$$
-
-$$
-w_{95}=Q_{0.95}(w_j)
-$$
-
-$$
-w_{\max}=\max(w_j)
-$$
-
-对应软件中的 paper-facing metrics：
+中位裂缝宽度：
 
 ```text
-Crack_width_mean_um
-Crack_width_median_um
-Crack_width_95_um
-Crack_width_max_um
+W_median = median(W1, W2, ..., WNc)
 ```
+
+P95 裂缝宽度：
+
+```text
+W_P95 = percentile(W1, W2, ..., WNc, 95)
+```
+
+最大裂缝宽度：
+
+```text
+W_max = max(W1, W2, ..., WNc)
+```
+
+这样可以避免长裂缝因为 COD sample 数更多而在 specimen-level statistics 中获得更高权重。
 
 ---
 
-# 9. 默认科学参数 · Scientific Parameters
+# 9. 科学参数 · Default Scientific Parameters
 
-| 模块 | 参数 | 默认值 | 含义 |
+| 模块 | Parameter | Default | 含义 |
 |---|---|---:|---|
-| Detection | `threshold_k` | 2.0 | Median + k × robust scale |
-| Detection | `min_tensile_strain` | 0.0002 | threshold 下限 |
-| Detection | `max_threshold` | 0.05 | threshold 上限 |
-| Detection | `min_crack_area_points` | 4 | 最小候选区面积 |
-| Detection | `min_crack_length_mm` | 0.15 mm | 最短有效 skeleton |
-| COD | `near_mm` | 0.15 mm | 最近采样距离 |
-| COD | `far_mm` | 0.75 mm | 最远采样距离 |
+| Detection | `threshold_k` | 2.0 | MAD 自适应阈值系数 |
+| Detection | `min_tensile_strain` | 0.0002 | 最低主拉应变阈值 |
+| Detection | `max_threshold` | 0.05 | 最高阈值限制 |
+| Detection | `min_crack_area_points` | 4 | 最小候选区域点数 |
+| Detection | `min_crack_length_mm` | 0.15 mm | 最短有效裂缝 |
+| Detection | `normal_radius_points` | 4 | local normal 邻域 |
+| COD | `near_mm` | 0.15 mm | 离裂缝最近采样距离 |
+| COD | `far_mm` | 0.75 mm | 离裂缝最远采样距离 |
 | COD | `samples_per_side` | 7 | 每侧请求采样点数 |
-| COD | `min_valid_per_side` | 3 | 每侧最少有效点数 |
-| COD | `min_samples_per_crack` | 3 | 每条裂缝最少 local COD 数 |
-| COD | `min_width_mm` | 0.001 mm | 代表宽度下限 |
-| COD | `max_width_mm` | 2.0 mm | local COD 上限 |
-| Robust Fit | `robust_sigma` | 3.5 | residual outlier 阈值 |
+| COD | `min_valid_per_side` | 3 | 每侧最低有效点数 |
+| COD | `min_samples_per_crack` | 3 | 单裂缝最低 local COD 数 |
+| COD | `robust_sigma` | 3.5 | residual MAD filtering |
+| COD | `min_width_mm` | 0.001 mm | 最小代表宽度 |
+| COD | `max_width_mm` | 2.0 mm | 最大允许 COD |
 
-这些参数位于：
+参数定义位于：
 
 ```text
 config/default.yaml
@@ -605,143 +605,148 @@ config/default.yaml
 
 ---
 
-# 10. 软件架构 · Architecture
+# 10. Excel 输出 · Paper-ready Workbook
 
-```mermaid
-flowchart TD
-    GUI[PySide6 GUI] --> WORKER[Analysis Worker]
-    WORKER --> PIPELINE[Peak-frame Pipeline]
-
-    PIPELINE --> MTS[MTS CSV Parser]
-    PIPELINE --> INPUT[DIC Frame Selector]
-
-    INPUT --> H5[CrackVision HDF5 Reader]
-    INPUT --> MAT[Legacy Ncorr MAT Reader]
-
-    PIPELINE --> PHYSICS[CrackPhysicsEngine]
-    PHYSICS --> RESULT[Crack-level Results]
-    RESULT --> EXPORT[OpenPyXL Exporter]
-    EXPORT --> XLSX[Paper-ready Excel]
-```
-
-核心原则：
-
-- GUI 不处理科学计算；
-- Worker 不实现 COD algorithm；
-- Reader 不判断裂缝；
-- Physics 不依赖 Qt / Excel；
-- Export 只负责结果呈现。
-
----
-
-# 11. GUI 使用 · Minimal Workflow
-
-GUI 只保留三个操作：
+每个试件自动生成：
 
 ```text
-1. 选择 Ncorr H5 / MAT
-2. 选择对应 MTS CSV
-3. 点击「分析峰值拉应力帧」
+<Ncorr folder>/CrackVision_Output/<specimen>_CrackVision.xlsx
 ```
 
-```mermaid
-flowchart TD
-    A[选择 Ncorr 数据] --> C{两个输入是否齐全}
-    B[选择 MTS CSV] --> C
-    C -->|Yes| D[分析峰值拉应力帧]
-    D --> E[显示 Peak Time / Frame / Crack Count]
-    E --> F[显示 Mean / P95 / Max Width]
-    F --> G[打开结果文件夹]
-```
+工作簿仅保留 3 张表。
 
-结果自动保存到：
+## `01_结果汇总`
+
+用于直接查看论文主结果：
 
 ```text
-<Ncorr 文件夹>/CrackVision_Output/<specimen>_CrackVision.xlsx
-```
-
----
-
-# 12. Excel 输出 · Paper-ready Workbook
-
-每个 specimen 只生成一个 Excel workbook：
-
-```text
-<specimen>_CrackVision.xlsx
-├─ 01_结果汇总
-├─ 02_裂缝明细
-└─ 03_质量检查
-```
-
-## 12.1 `01_结果汇总`
-
-用于论文结果快速查看：
-
-```text
-峰值拉力
-峰值时刻
-DIC frame
-时间匹配误差
-有效裂缝数
-平均裂缝宽度
-中位裂缝宽度
-P95 裂缝宽度
-最大裂缝宽度
-COD status
-```
-
-并自动绘制峰值拉应力状态下各裂缝代表宽度图。
-
-## 12.2 `02_裂缝明细`
-
-每一行对应一条有效裂缝：
-
-```text
-裂缝编号
-裂缝长度 (mm)
-代表宽度 (μm)
-COD 有效点数
-拟合 R² 中位数
-```
-
-论文中如果需要画 crack-width distribution，直接使用 **代表宽度 (μm)** 列。
-
-## 12.3 `03_质量检查`
-
-保留必要 QA 信息，例如：
-
-```text
-COD status
-Peak Force / Peak Time
+Peak Tensile Force
+Peak Time
 Selected DIC Frame
+Frame Match Error
+Accepted Crack Count
+Mean Crack Width
+Median Crack Width
+P95 Crack Width
+Maximum Crack Width
+COD Status
+```
+
+同时包含峰值拉应力状态下各裂缝 representative width 图。
+
+## `02_裂缝明细`
+
+每行对应一条有效裂缝：
+
+| 裂缝编号 | 裂缝长度 (mm) | 代表宽度 (μm) | COD 有效点数 | 拟合 R² 中位数 |
+|---:|---:|---:|---:|---:|
+| 1 | ... | ... | ... | ... |
+| 2 | ... | ... | ... | ... |
+
+论文绘制 crack-width distribution 时，直接使用 **代表宽度 (μm)**。
+
+## `03_质量检查`
+
+保留必要 QA：
+
+```text
+COD Status
+MTS Peak Force / Time
+Selected DIC Frame / Time
 Frame Match Error
 Pixel Scale
 DIC Grid Spacing
 Valid Fraction
 Principal-strain Threshold
-Candidate / Skeleton Points
+Candidate Points
+Skeleton Points
+Accepted Crack Count
 Metadata Source
 ```
 
+失败测量保持 `NaN`，不会静默改写为 `0 μm`。
+
 ---
 
-# 13. 安装与运行 · Installation
+# 11. GUI / UX
 
-推荐 Python 3.10+。
+主界面只保留实际使用所需操作：
 
-```bash
-python -m venv .venv
+```mermaid
+flowchart TD
+    A[选择 Ncorr H5 / MAT] --> C[分析峰值拉应力帧]
+    B[选择 MTS CSV] --> C
+    C --> D[自动寻找 Peak Time]
+    D --> E[匹配最近 DIC Frame]
+    E --> F[计算全部有效裂缝 COD]
+    F --> G[显示核心结果]
+    G --> H[自动保存 Excel]
+```
 
-# Windows
-.venv\Scripts\activate
+GUI 不再提供：
 
-pip install -r requirements.txt
-python main.py
+- output-directory picker；
+- synchronization offset；
+- manual scale input；
+- progress bar；
+- debug log panel；
+- 多模式分析入口。
+
+输出目录自动创建：
+
+```text
+CrackVision_Output/
 ```
 
 ---
 
-# 14. 项目结构 · Project Structure
+# 12. 软件架构 · Architecture
+
+```mermaid
+flowchart TD
+    GUI[PySide6 GUI] --> Worker[Worker Thread]
+    Worker --> Pipeline[Peak-frame Pipeline]
+
+    Pipeline --> MTS[MTS CSV Parser]
+    Pipeline --> Input[Input Selection]
+
+    Input --> H5[CrackVision HDF5 Reader]
+    Input --> MAT[Legacy Ncorr MAT Reader]
+
+    H5 --> Frame[FrameData]
+    MAT --> Frame
+
+    Frame --> Physics[CrackPhysicsEngine]
+    Physics --> Summary[Equal-weight Crack Summary]
+    Summary --> Export[Excel Export]
+```
+
+模块职责：
+
+```text
+GUI       → 输入与结果展示
+Worker    → 后台线程生命周期
+Pipeline  → Peak Time → DIC Frame → COD → Export
+MTS       → 解析原始 MTS CSV
+Input     → 选择目标 DIC frame
+Reader    → 读取 Ncorr 数据
+Physics   → 裂缝识别 + COD
+Export    → Paper-ready Excel
+```
+
+设计原则：
+
+```text
+GUI 不知道 Ncorr 内部结构
+Worker 不实现科研计算
+Reader 不计算 COD
+Physics 不依赖 Qt / Excel
+Export 不改变科研结果
+```
+
+---
+
+# 13. 项目结构 · Project Structure
 
 ```text
 CrackVision-DIC/
@@ -769,68 +774,70 @@ CrackVision-DIC/
 
 ---
 
-# 15. 方法定义 · Method Summary
+# 14. 安装与运行 · Installation
 
-CrackVision-DIC 当前采用的完整定义为：
+推荐 Python 3.10+。
 
-$$
-t_{\mathrm{peak}}
-=
-\underset{t}{\arg\max}\;[sF(t)]
-$$
+```bash
+python -m venv .venv
+```
 
-$$
-k^*
-=
-\underset{k}{\arg\min}\;
-\left|t_k^{\mathrm{DIC}}-t_{\mathrm{peak}}\right|
-$$
+Windows：
 
-$$
-\varepsilon_1
-=
-\frac{E_{xx}+E_{yy}}{2}
-+
-\sqrt{
-\left(\frac{E_{xx}-E_{yy}}{2}\right)^2+E_{xy}^2
-}
-$$
+```bash
+.venv\Scripts\activate
+```
 
-$$
-\mathrm{COD}_{j,i}
-=
-|b_{j,i}^{+}-b_{j,i}^{-}|
-$$
+安装依赖并启动：
 
-$$
-w_j
-=
-\mathrm{median}_i(\mathrm{COD}_{j,i})
-$$
-
-$$
-\bar w
-=
-\frac{1}{N_c}\sum_{j=1}^{N_c}w_j
-$$
-
-即：
-
-> **MTS 定位峰值状态，Maximum Principal Tensile Strain 定位裂缝，Ncorr U/V 位移场计算 COD，每条裂缝以 median local COD 作为代表宽度，试件级统计按裂缝等权。**
+```bash
+pip install -r requirements.txt
+python main.py
+```
 
 ---
 
-## Scope
+# 15. Tests
 
-项目当前**不包含**：
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
 
-- image-based crack segmentation；
-- 通过图像像素厚度估算 crack width；
-- MTS 全曲线 dashboard；
-- 多模式 report system；
-- multiprocessing / temporary-file pipeline；
-- 与峰值拉应力状态无关的冗余分析模式。
+当前测试覆盖：
 
-CrackVision-DIC 的定位始终保持为：
+- principal strain calculation；
+- horizontal / vertical crack COD；
+- continuous background deformation regression；
+- Ncorr spacing semantics；
+- classic MAT / v7.3 MAT loading；
+- compact HDF5 bridge；
+- MTS peak-force parsing；
+- positive / negative tension sign；
+- peak-frame selection；
+- equal-weight crack statistics；
+- Excel workbook layout。
 
-> **一个专门服务于 ECC / SHCC 峰值拉应力状态 DIC-COD 裂缝宽度分析的轻量科研工具。**
+---
+
+# 16. 方法学总结 · Method Summary
+
+CrackVision-DIC 当前方法可以压缩为以下 9 步：
+
+```text
+1. t_peak = arg max_t [s · F(t)]
+2. k* = arg min_k |t_DIC(k) - t_peak|
+3. ε1 = (Exx + Eyy)/2 + sqrt(((Exx - Eyy)/2)^2 + Exy^2)
+4. T = clip(median(ε1) + 2.0 × 1.4826 × MAD, 2e-4, 5e-2)
+5. Candidate → Skeleton → Crack Labels → Local Normal
+6. u_n = u · nx + v · ny
+7. COD = |b+ - b-| × pixel_size_mm
+8. W_crack = median(local COD values)
+9. W_mean = mean(W_crack,1 ... W_crack,Nc)
+```
+
+其中：
+
+> **Strain tells CrackVision where the crack is; displacement discontinuity tells CrackVision how wide it is.**
+
+这也是本项目与 image-based apparent crack-width measurement 最核心的区别。
