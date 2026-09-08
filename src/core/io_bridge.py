@@ -25,18 +25,51 @@ class CrackVisionNcorrH5Loader:
 
     @classmethod
     def stream_frames(cls, path: Path) -> Generator[FrameData, None, None]:
+        h5py = cls._import_h5py()
+        path = Path(path)
+        with cls._open_validated(h5py, path) as f:
+            context = cls._context(f)
+            for frame_id in range(context["n_frames"]):
+                yield cls._read_frame(context, frame_id)
+
+    @classmethod
+    def read_nearest_frame(cls, path: Path, target_time_s: float) -> FrameData:
+        """Random-read only the DIC frame nearest to target_time_s."""
+        if not np.isfinite(target_time_s):
+            raise ValueError("target_time_s must be finite")
+
+        h5py = cls._import_h5py()
+        path = Path(path)
+        with cls._open_validated(h5py, path) as f:
+            context = cls._context(f)
+            times = context["time_values"]
+            finite = np.isfinite(times)
+            if not np.any(finite):
+                raise ValueError(
+                    "CrackVision-Ncorr H5 has no usable time axis. "
+                    "Re-export it with a valid sampling interval."
+                )
+            valid_ids = np.flatnonzero(finite)
+            local = int(np.argmin(np.abs(times[finite] - float(target_time_s))))
+            frame_id = int(valid_ids[local])
+            return cls._read_frame(context, frame_id)
+
+    @staticmethod
+    def _import_h5py():
         try:
             import h5py
         except ImportError as exc:
             raise ImportError("CrackVision-Ncorr HDF5 files require h5py") from exc
+        return h5py
 
-        path = Path(path)
+    @classmethod
+    def _open_validated(cls, h5py: Any, path: Path):
         if not path.exists():
             raise FileNotFoundError(path)
         if not h5py.is_hdf5(str(path)):
             raise ValueError("Input is not an HDF5 file")
-
-        with h5py.File(str(path), "r") as f:
+        f = h5py.File(str(path), "r")
+        try:
             fmt = cls._decode_attr(f.attrs.get("format", ""))
             version = int(f.attrs.get("format_version", 0))
             if fmt != cls.FORMAT:
@@ -49,112 +82,117 @@ class CrackVisionNcorrH5Loader:
                     f"Unsupported {cls.FORMAT} version {version}; "
                     f"expected {cls.FORMAT_VERSION}"
                 )
+        except Exception:
+            f.close()
+            raise
+        return f
 
-            fields = f.get("fields")
-            if fields is None:
-                raise KeyError("Bridge file is missing /fields")
+    @classmethod
+    def _context(cls, f: Any) -> dict[str, Any]:
+        fields = f.get("fields")
+        if fields is None:
+            raise KeyError("Bridge file is missing /fields")
 
-            missing = [name for name in cls.REQUIRED_FIELDS if name not in fields]
-            if missing:
-                raise KeyError(
-                    f"Bridge file missing required fields: {', '.join(missing)}"
-                )
+        missing = [name for name in cls.REQUIRED_FIELDS if name not in fields]
+        if missing:
+            raise KeyError(f"Bridge file missing required fields: {', '.join(missing)}")
 
-            datasets = {name: fields[name] for name in cls.REQUIRED_FIELDS}
-            shapes = {name: tuple(ds.shape) for name, ds in datasets.items()}
-            if any(ds.ndim != 3 for ds in datasets.values()):
-                raise ValueError(
-                    f"Bridge fields must use [frame, y, x] layout; shapes={shapes}"
-                )
-            if len(set(shapes.values())) != 1:
-                raise ValueError(f"Bridge field shape mismatch: {shapes}")
-
-            n_frames, height, width = next(iter(shapes.values()))
-            if n_frames <= 0 or height <= 1 or width <= 1:
-                raise ValueError(
-                    f"Invalid bridge field shape: {(n_frames, height, width)}"
-                )
-
-            pixel_size_mm = cls._positive_attr(f, "pixel_size_mm")
-            dic_step_px = cls._positive_attr(f, "dic_step_px")
-            dic_point_spacing_mm = float(
-                f.attrs.get("dic_point_spacing_mm", np.nan)
+        datasets = {name: fields[name] for name in cls.REQUIRED_FIELDS}
+        shapes = {name: tuple(ds.shape) for name, ds in datasets.items()}
+        if any(ds.ndim != 3 for ds in datasets.values()):
+            raise ValueError(
+                f"Bridge fields must use [frame, y, x] layout; shapes={shapes}"
             )
-            if (
-                not np.isfinite(dic_point_spacing_mm)
-                or dic_point_spacing_mm <= 0
-            ):
-                dic_point_spacing_mm = pixel_size_mm * dic_step_px
+        if len(set(shapes.values())) != 1:
+            raise ValueError(f"Bridge field shape mismatch: {shapes}")
 
-            raw_spacing_value = float(
-                f.attrs.get("ncorr_spacing_raw", np.nan)
-            )
-            ncorr_spacing_raw: Optional[float] = (
-                raw_spacing_value if np.isfinite(raw_spacing_value) else None
+        n_frames, height, width = next(iter(shapes.values()))
+        if n_frames <= 0 or height <= 1 or width <= 1:
+            raise ValueError(f"Invalid bridge field shape: {(n_frames, height, width)}")
+
+        pixel_size_mm = cls._positive_attr(f, "pixel_size_mm")
+        dic_step_px = cls._positive_attr(f, "dic_step_px")
+        dic_point_spacing_mm = float(f.attrs.get("dic_point_spacing_mm", np.nan))
+        if not np.isfinite(dic_point_spacing_mm) or dic_point_spacing_mm <= 0:
+            dic_point_spacing_mm = pixel_size_mm * dic_step_px
+
+        raw_spacing_value = float(f.attrs.get("ncorr_spacing_raw", np.nan))
+        ncorr_spacing_raw: Optional[float] = (
+            raw_spacing_value if np.isfinite(raw_spacing_value) else None
+        )
+
+        coordinate = cls._decode_attr(f.attrs.get("coordinate_system", "reference"))
+        strain_measure = cls._decode_attr(
+            f.attrs.get("strain_measure", "Green-Lagrange")
+        )
+        precision = cls._decode_attr(f.attrs.get("numeric_precision", "unknown"))
+        metadata_source = (
+            f"crackvision_ncorr_h5;{coordinate};{strain_measure};{precision}"
+        )
+
+        time_values = cls._time_values(f, n_frames)
+        mask_ds = fields.get("mask")
+        if mask_ds is not None and tuple(mask_ds.shape) != (
+            n_frames,
+            height,
+            width,
+        ):
+            raise ValueError(
+                f"Bridge mask shape {tuple(mask_ds.shape)} does not match "
+                f"{(n_frames, height, width)}"
             )
 
-            coordinate = cls._decode_attr(
-                f.attrs.get("coordinate_system", "reference")
-            )
-            strain_measure = cls._decode_attr(
-                f.attrs.get("strain_measure", "Green-Lagrange")
-            )
-            precision = cls._decode_attr(
-                f.attrs.get("numeric_precision", "unknown")
-            )
-            metadata_source = (
-                f"crackvision_ncorr_h5;{coordinate};"
-                f"{strain_measure};{precision}"
-            )
+        return {
+            "datasets": datasets,
+            "mask_ds": mask_ds,
+            "n_frames": int(n_frames),
+            "pixel_size_mm": pixel_size_mm,
+            "dic_step_px": dic_step_px,
+            "dic_point_spacing_mm": dic_point_spacing_mm,
+            "ncorr_spacing_raw": ncorr_spacing_raw,
+            "metadata_source": metadata_source,
+            "time_values": time_values,
+        }
 
-            time_values = cls._time_values(f, n_frames)
-            mask_ds = fields.get("mask")
-            if mask_ds is not None and tuple(mask_ds.shape) != (
-                n_frames,
-                height,
-                width,
-            ):
-                raise ValueError(
-                    f"Bridge mask shape {tuple(mask_ds.shape)} does not match "
-                    f"{(n_frames, height, width)}"
-                )
+    @classmethod
+    def _read_frame(cls, context: dict[str, Any], frame_id: int) -> FrameData:
+        datasets = context["datasets"]
+        u = np.asarray(datasets["u"][frame_id], dtype=np.float64)
+        v = np.asarray(datasets["v"][frame_id], dtype=np.float64)
+        exx = np.asarray(datasets["exx"][frame_id], dtype=np.float64)
+        eyy = np.asarray(datasets["eyy"][frame_id], dtype=np.float64)
+        exy = np.asarray(datasets["exy"][frame_id], dtype=np.float64)
 
-            for frame_id in range(n_frames):
-                u = np.asarray(datasets["u"][frame_id], dtype=np.float64)
-                v = np.asarray(datasets["v"][frame_id], dtype=np.float64)
-                exx = np.asarray(datasets["exx"][frame_id], dtype=np.float64)
-                eyy = np.asarray(datasets["eyy"][frame_id], dtype=np.float64)
-                exy = np.asarray(datasets["exy"][frame_id], dtype=np.float64)
+        cls._validate_shapes(frame_id, u, v, exx, eyy, exy)
+        finite = (
+            np.isfinite(u)
+            & np.isfinite(v)
+            & np.isfinite(exx)
+            & np.isfinite(eyy)
+            & np.isfinite(exy)
+        )
+        mask_ds = context["mask_ds"]
+        mask = (
+            finite
+            if mask_ds is None
+            else np.asarray(mask_ds[frame_id], dtype=bool) & finite
+        )
 
-                cls._validate_shapes(frame_id, u, v, exx, eyy, exy)
-                finite = (
-                    np.isfinite(u)
-                    & np.isfinite(v)
-                    & np.isfinite(exx)
-                    & np.isfinite(eyy)
-                    & np.isfinite(exy)
-                )
-                mask = (
-                    finite
-                    if mask_ds is None
-                    else np.asarray(mask_ds[frame_id], dtype=bool) & finite
-                )
-
-                yield FrameData(
-                    frame_id=frame_id,
-                    u_map=u,
-                    v_map=v,
-                    exx_map=exx,
-                    eyy_map=eyy,
-                    exy_map=exy,
-                    mask=mask,
-                    pixel_size_mm=pixel_size_mm,
-                    dic_point_spacing_mm=dic_point_spacing_mm,
-                    time_s=float(time_values[frame_id]),
-                    metadata_source=metadata_source,
-                    ncorr_spacing_raw=ncorr_spacing_raw,
-                    dic_step_px=dic_step_px,
-                )
+        return FrameData(
+            frame_id=frame_id,
+            u_map=u,
+            v_map=v,
+            exx_map=exx,
+            eyy_map=eyy,
+            exy_map=exy,
+            mask=mask,
+            pixel_size_mm=float(context["pixel_size_mm"]),
+            dic_point_spacing_mm=float(context["dic_point_spacing_mm"]),
+            time_s=float(context["time_values"][frame_id]),
+            metadata_source=str(context["metadata_source"]),
+            ncorr_spacing_raw=context["ncorr_spacing_raw"],
+            dic_step_px=float(context["dic_step_px"]),
+        )
 
     @staticmethod
     def _positive_attr(h5_file: Any, name: str) -> float:
@@ -168,9 +206,7 @@ class CrackVisionNcorrH5Loader:
         if "time_s" in h5_file:
             values = np.asarray(h5_file["time_s"][:], dtype=float).reshape(-1)
             if len(values) != n_frames:
-                raise ValueError(
-                    f"/time_s length {len(values)} != frame count {n_frames}"
-                )
+                raise ValueError(f"/time_s length {len(values)} != frame count {n_frames}")
             return values
 
         dt = float(h5_file.attrs.get("sampling_interval_s", np.nan))

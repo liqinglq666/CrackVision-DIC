@@ -4,85 +4,122 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-import numpy as np
 import pandas as pd
 
 from .export import build_qa, export_workbook, prepare_crack_details, prepare_frame_summary
-from .input import output_stem, stream_frames
-from .models import FrameData
+from .input import SelectedFrame, output_stem, select_nearest_frame
+from .mts import MtsPeak, read_mts_peak
 from .physics import CrackPhysicsEngine
+
+
+@dataclass(frozen=True, slots=True)
+class PeakFrameSelection:
+    mts_peak_force_N: float
+    mts_peak_time_s: float
+    mts_tension_sign: int
+    dic_frame0_mts_time_s: float
+    target_dic_time_s: float
+    selected_frame_id: int
+    selected_dic_time_s: float
+    selected_mts_time_s: float
+    match_error_s: float
 
 
 @dataclass(slots=True)
 class AnalysisResult:
     input_path: Path
+    mts_path: Path
     frame_df: pd.DataFrame
     crack_df: pd.DataFrame
     qa_df: pd.DataFrame
+    selection: PeakFrameSelection
 
     @property
-    def frame_count(self) -> int:
-        return int(len(self.frame_df))
-
-    @property
-    def cod_ok_count(self) -> int:
+    def cod_status(self) -> str:
         if self.frame_df.empty or "cod_status" not in self.frame_df:
-            return 0
-        return int((self.frame_df["cod_status"] == "ok").sum())
-
-    @property
-    def cod_failed_count(self) -> int:
-        return self.frame_count - self.cod_ok_count
+            return "unknown"
+        return str(self.frame_df.iloc[0]["cod_status"])
 
 
-def analyze_file(
+def analyze_peak_frame(
     data_path: Path,
+    mts_csv_path: Path,
     config: dict[str, Any],
     *,
+    dic_frame0_mts_time_s: float = 0.0,
     should_continue: Callable[[], bool] | None = None,
-    on_first_frame: Callable[[FrameData], None] | None = None,
 ) -> AnalysisResult | None:
-    """Run the complete scientific pipeline for one input file.
-
-    Returns ``None`` when cancellation is requested before all frames are analysed.
-    """
-    path = Path(data_path)
+    """Analyse only the DIC frame nearest to MTS peak tensile stress/force."""
     keep_running = should_continue or (lambda: True)
-    fallback_dt = float(config.get("experiment", {}).get("sampling_interval_s", 5.0))
-    if fallback_dt <= 0:
-        raise ValueError("experiment.sampling_interval_s must be > 0")
+    if not keep_running():
+        return None
+
+    mts_peak: MtsPeak = read_mts_peak(Path(mts_csv_path))
+    target_dic_time_s = float(mts_peak.peak_time_s - dic_frame0_mts_time_s)
+
+    selected: SelectedFrame = select_nearest_frame(
+        Path(data_path), config, target_dic_time_s
+    )
+    if not keep_running():
+        return None
 
     engine = CrackPhysicsEngine(config)
-    summaries: list[dict[str, Any]] = []
-    detail_tables: list[pd.DataFrame] = []
-    first = True
+    summary, details = engine.analyze_frame(selected.frame)
 
-    for frame in stream_frames(path, config):
-        if not keep_running():
-            return None
-        if first:
-            if on_first_frame is not None:
-                on_first_frame(frame)
-            first = False
+    selected_mts_time_s = float(selected.dic_time_s + dic_frame0_mts_time_s)
+    match_error_s = float(selected_mts_time_s - mts_peak.peak_time_s)
+    selection = PeakFrameSelection(
+        mts_peak_force_N=float(mts_peak.peak_force_N),
+        mts_peak_time_s=float(mts_peak.peak_time_s),
+        mts_tension_sign=int(mts_peak.tension_sign),
+        dic_frame0_mts_time_s=float(dic_frame0_mts_time_s),
+        target_dic_time_s=target_dic_time_s,
+        selected_frame_id=int(selected.frame.frame_id),
+        selected_dic_time_s=float(selected.dic_time_s),
+        selected_mts_time_s=selected_mts_time_s,
+        match_error_s=match_error_s,
+    )
 
-        summary, details = engine.analyze_frame(frame)
-        if not np.isfinite(summary.get("Time_s", np.nan)):
-            summary["Time_s"] = frame.frame_id * fallback_dt
-            summary["time_source"] = "frame_index_fallback"
-        else:
-            summary["time_source"] = "input_metadata"
+    summary.update(
+        {
+            "Time_s": float(selected.dic_time_s),
+            "time_source": selected.time_source,
+            "selection_mode": "nearest_dic_frame_to_mts_peak_tensile_force",
+            "MTS_peak_force_N": float(mts_peak.peak_force_N),
+            "MTS_peak_time_s": float(mts_peak.peak_time_s),
+            "MTS_tension_sign": int(mts_peak.tension_sign),
+            "DIC_frame0_MTS_time_s": float(dic_frame0_mts_time_s),
+            "DIC_selected_time_s": float(selected.dic_time_s),
+            "MTS_time_at_selected_DIC_frame_s": selected_mts_time_s,
+            "frame_match_error_s": match_error_s,
+        }
+    )
 
-        summaries.append(summary)
-        if not details.empty:
-            detail_tables.append(details)
-
-    if not summaries:
-        raise ValueError("No DIC frames were found in the input file")
-
-    frame_df = prepare_frame_summary(summaries)
-    crack_df = prepare_crack_details(detail_tables)
+    frame_df = prepare_frame_summary([summary])
+    crack_df = prepare_crack_details([details] if not details.empty else [])
     qa_df = build_qa(frame_df)
-    return AnalysisResult(path, frame_df, crack_df, qa_df)
+    qa_extra = pd.DataFrame(
+        [
+            {"Metric": "selection_mode", "Value": summary["selection_mode"]},
+            {"Metric": "MTS_peak_force_N", "Value": mts_peak.peak_force_N},
+            {"Metric": "MTS_peak_time_s", "Value": mts_peak.peak_time_s},
+            {"Metric": "MTS_tension_sign", "Value": mts_peak.tension_sign},
+            {"Metric": "DIC_frame0_MTS_time_s", "Value": dic_frame0_mts_time_s},
+            {"Metric": "selected_DIC_frame", "Value": selected.frame.frame_id},
+            {"Metric": "selected_DIC_time_s", "Value": selected.dic_time_s},
+            {"Metric": "frame_match_error_s", "Value": match_error_s},
+        ]
+    )
+    qa_df = pd.concat([qa_df, qa_extra], ignore_index=True)
+
+    return AnalysisResult(
+        input_path=Path(data_path),
+        mts_path=Path(mts_csv_path),
+        frame_df=frame_df,
+        crack_df=crack_df,
+        qa_df=qa_df,
+        selection=selection,
+    )
 
 
 def export_result(result: AnalysisResult, out_dir: Path) -> Path:
