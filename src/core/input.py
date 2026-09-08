@@ -10,7 +10,11 @@ from .models import FrameData
 
 H5_SUFFIXES = {".h5", ".hdf5"}
 MAT_SUFFIXES = {".mat"}
-SUPPORTED_SUFFIXES = H5_SUFFIXES | MAT_SUFFIXES
+FILE_DIALOG_FILTER = (
+    "Ncorr data (*.h5 *.hdf5 *.mat);;"
+    "CrackVision-Ncorr H5 (*.h5 *.hdf5);;"
+    "Original Ncorr MAT (*.mat)"
+)
 
 
 def input_kind(path: Path) -> str:
@@ -27,11 +31,7 @@ def stream_frames(path: Path, config: dict[str, Any]) -> Iterator[FrameData]:
     path = Path(path)
     suffix = path.suffix.lower()
     if suffix in H5_SUFFIXES:
-        if not CrackVisionNcorrH5Loader.is_bridge_file(path):
-            raise ValueError(
-                "HDF5 file is not a CrackVision-Ncorr bridge. "
-                "Create it with matlab/export_ncorr_to_crackvision.m."
-            )
+        # The bridge reader owns all HDF5 contract/version validation.
         yield from CrackVisionNcorrH5Loader.stream_frames(path)
         return
 
@@ -49,6 +49,5 @@ def stream_frames(path: Path, config: dict[str, Any]) -> Iterator[FrameData]:
 def output_stem(path: Path) -> str:
     """Normalize the specimen stem so bridge files do not duplicate the suffix."""
     stem = Path(path).stem
-    lower = stem.lower()
     suffix = "_crackvision"
-    return stem[: -len(suffix)] if lower.endswith(suffix) else stem
+    return stem[: -len(suffix)] if stem.lower().endswith(suffix) else stem
