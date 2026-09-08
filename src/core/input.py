@@ -25,17 +25,6 @@ class SelectedFrame:
     frame: FrameData
     dic_time_s: float
     time_source: str
-    target_dic_time_s: float
-    match_error_s: float
-
-
-def input_kind(path: Path) -> str:
-    suffix = Path(path).suffix.lower()
-    if suffix in H5_SUFFIXES:
-        return "CrackVision-Ncorr H5"
-    if suffix in MAT_SUFFIXES:
-        return "original Ncorr MAT"
-    raise ValueError(f"Unsupported input type: {suffix or '<no extension>'}")
 
 
 def select_nearest_frame(
@@ -43,24 +32,20 @@ def select_nearest_frame(
     config: dict[str, Any],
     target_dic_time_s: float,
 ) -> SelectedFrame:
-    """Read only the DIC frame nearest to the requested DIC-relative time."""
+    """Read only the DIC frame nearest to the requested time."""
     path = Path(path)
     if not np.isfinite(target_dic_time_s):
         raise ValueError("target_dic_time_s must be finite")
 
     suffix = path.suffix.lower()
     if suffix in H5_SUFFIXES:
-        frame = CrackVisionNcorrH5Loader.read_nearest_frame(
-            path, float(target_dic_time_s)
-        )
+        frame = CrackVisionNcorrH5Loader.read_nearest_frame(path, float(target_dic_time_s))
         if not np.isfinite(frame.time_s):
             raise ValueError("Selected H5 frame has no usable timestamp.")
         return SelectedFrame(
             frame=frame,
             dic_time_s=float(frame.time_s),
             time_source="input_metadata",
-            target_dic_time_s=float(target_dic_time_s),
-            match_error_s=float(frame.time_s - target_dic_time_s),
         )
 
     if suffix in MAT_SUFFIXES:
@@ -102,8 +87,6 @@ def select_nearest_frame(
             frame=best_frame,
             dic_time_s=best_time,
             time_source=best_source,
-            target_dic_time_s=float(target_dic_time_s),
-            match_error_s=float(best_time - target_dic_time_s),
         )
 
     raise ValueError(f"Unsupported input type: {suffix or '<no extension>'}")
