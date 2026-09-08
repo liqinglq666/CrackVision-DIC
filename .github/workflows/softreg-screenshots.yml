@@ -1,0 +1,66 @@
+name: SoftReg Real Run Screenshots
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/softreg-screenshots.yml"
+      - "tools/softreg_capture.py"
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Linux GUI runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libxkbcommon-x11-0 libxcb-cursor0 fonts-noto-cjk
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run automated tests
+        run: pytest -q
+
+      - name: Run CrackVision-DIC and capture real screenshots
+        run: |
+          mkdir -p artifacts/softreg
+          xvfb-run -a python tools/softreg_capture.py --out artifacts/softreg
+
+      - name: Archive exact source snapshot
+        run: git archive --format=zip --output=artifacts/softreg/CrackVision-DIC-source.zip HEAD
+
+      - name: Record CI provenance
+        run: |
+          {
+            echo "repository=${GITHUB_REPOSITORY}"
+            echo "commit=${GITHUB_SHA}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_number=${GITHUB_RUN_NUMBER}"
+            echo "runner_os=${RUNNER_OS}"
+            python --version
+          } > artifacts/softreg/github_actions_provenance.txt
+
+      - name: Upload registration evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrackVision-DIC-softreg-real-run
+          path: artifacts/softreg
+          if-no-files-found: error
+          retention-days: 30
