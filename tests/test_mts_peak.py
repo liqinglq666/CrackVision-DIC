@@ -94,7 +94,6 @@ def test_pipeline_analyses_only_nearest_peak_stress_frame(tmp_path):
     }
 
     result = analyze_peak_frame(h5_path, mts_path, config)
-    assert result is not None
     assert len(result.frame_df) == 1
     assert int(result.frame_df.loc[0, "Frame"]) == 2
     assert result.selection.selected_dic_time_s == 10.0
@@ -104,28 +103,20 @@ def test_pipeline_analyses_only_nearest_peak_stress_frame(tmp_path):
 
 
 def test_equal_weight_summary_uses_one_representative_width_per_crack():
-    summary = {
-        "W_avg_mm": 0.080,
-        "W_median_mm": 0.070,
-        "W_95_mm": 0.150,
-        "W_max_mm": 0.200,
-    }
     details = pd.DataFrame(
         {
             "Crack_ID": [1, 2, 3],
-            # These are the representative median widths of three cracks.
             "W_median_mm": [0.020, 0.040, 0.100],
-            # Different local sample counts must not change crack weights.
+            # Very different local sample counts must not change crack weights.
             "COD_samples": [100, 5, 3],
         }
     )
 
-    out = apply_equal_weight_crack_summary(summary, details)
+    out = apply_equal_weight_crack_summary({}, details)
 
-    assert out["crack_width_basis"] == "equal_weight_per_crack_W_median"
-    assert out["crack_representative_count"] == 3
     assert np.isclose(out["Crack_width_mean_mm"], (0.020 + 0.040 + 0.100) / 3)
     assert np.isclose(out["Crack_width_median_mm"], 0.040)
+    assert np.isclose(out["Crack_width_95_mm"], np.percentile([0.020, 0.040, 0.100], 95))
     assert np.isclose(out["Crack_width_max_mm"], 0.100)
-    assert np.isclose(out["W_avg_mm"], out["Crack_width_mean_mm"])
-    assert np.isclose(out["W_median_mm"], out["Crack_width_median_mm"])
+    assert "W_avg_mm" not in out
+    assert "crack_width_basis" not in out
