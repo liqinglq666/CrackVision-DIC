@@ -30,7 +30,6 @@ CRACK_DETAIL_COLUMNS_MM = (
 )
 
 NAVY = "1F4E78"
-BLUE = "D9EAF7"
 LIGHT = "F6F8FB"
 GREEN = "E2F0D9"
 RED = "FCE8E6"
@@ -75,8 +74,15 @@ def _safe(row: pd.Series, key: str, default: object = "—") -> object:
     return value
 
 
-def _metric_card(ws, label_cell: str, value_range: str, label: str, value: object, number_format: str | None = None) -> None:
-    start, end = value_range.split(":")
+def _metric_card(
+    ws,
+    label_cell: str,
+    value_range: str,
+    label: str,
+    value: object,
+    number_format: str | None = None,
+) -> None:
+    start = value_range.split(":", 1)[0]
     ws[label_cell] = label
     ws[label_cell].font = Font(size=10, color=GRAY, bold=True)
     ws[label_cell].alignment = Alignment(vertical="center")
@@ -92,7 +98,11 @@ def _metric_card(ws, label_cell: str, value_range: str, label: str, value: objec
         cell.number_format = number_format
 
 
-def _write_summary_sheet(writer: pd.ExcelWriter, frame_df: pd.DataFrame, crack_df: pd.DataFrame) -> None:
+def _write_summary_sheet(
+    writer: pd.ExcelWriter,
+    frame_df: pd.DataFrame,
+    crack_df: pd.DataFrame,
+) -> None:
     wb = writer.book
     ws = wb.create_sheet("01_结果汇总")
     ws.sheet_view.showGridLines = False
@@ -116,13 +126,15 @@ def _write_summary_sheet(writer: pd.ExcelWriter, frame_df: pd.DataFrame, crack_d
         return
 
     row = frame_df.iloc[0]
+    frame_value = _safe(row, "Frame")
+    crack_count = _safe(row, "crack_count")
 
     _metric_card(ws, "A4", "A5:B5", "峰值拉力 (N)", _safe(row, "MTS_peak_force_N"), "0.0")
     _metric_card(ws, "C4", "C5:D5", "峰值时刻 (s)", _safe(row, "MTS_peak_time_s"), "0.000")
-    _metric_card(ws, "E4", "E5:F5", "DIC 帧", int(_safe(row, "Frame", 0)) if _safe(row, "Frame", "—") != "—" else "—", "0")
+    _metric_card(ws, "E4", "E5:F5", "DIC 帧", int(frame_value) if frame_value != "—" else "—", "0")
     _metric_card(ws, "G4", "G5:H5", "时间匹配误差 (s)", _safe(row, "frame_match_error_s"), "+0.000;-0.000;0.000")
 
-    _metric_card(ws, "A7", "A8:B8", "有效裂缝数", int(_safe(row, "crack_count", 0)) if _safe(row, "crack_count", "—") != "—" else "—", "0")
+    _metric_card(ws, "A7", "A8:B8", "有效裂缝数", int(crack_count) if crack_count != "—" else "—", "0")
     _metric_card(ws, "C7", "C8:D8", "平均裂缝宽度 (μm)", _safe(row, "Crack_width_mean_um"), "0.0")
     _metric_card(ws, "E7", "E8:F8", "中位裂缝宽度 (μm)", _safe(row, "Crack_width_median_um"), "0.0")
     _metric_card(ws, "G7", "G8:H8", "P95 裂缝宽度 (μm)", _safe(row, "Crack_width_95_um"), "0.0")
@@ -136,20 +148,19 @@ def _write_summary_sheet(writer: pd.ExcelWriter, frame_df: pd.DataFrame, crack_d
         ws.column_dimensions[col].width = 17
 
     if crack_df is not None and not crack_df.empty and "W_median_um" in crack_df.columns:
-        chart = BarChart()
-        chart.type = "col"
-        chart.style = 10
-        chart.title = "峰值拉应力帧各裂缝代表宽度"
-        chart.y_axis.title = "裂缝宽度 (μm)"
-        chart.x_axis.title = "裂缝编号"
-        chart.legend = None
-        chart.height = 7.0
-        chart.width = 15.5
         details_ws = wb["02_裂缝明细"]
-        max_row = details_ws.max_row
-        if max_row >= 2:
-            data = Reference(details_ws, min_col=3, min_row=1, max_row=max_row)
-            cats = Reference(details_ws, min_col=1, min_row=2, max_row=max_row)
+        if details_ws.max_row >= 2:
+            chart = BarChart()
+            chart.type = "col"
+            chart.style = 10
+            chart.title = "峰值拉应力帧各裂缝代表宽度"
+            chart.y_axis.title = "裂缝宽度 (μm)"
+            chart.x_axis.title = "裂缝编号"
+            chart.legend = None
+            chart.height = 7.0
+            chart.width = 15.5
+            data = Reference(details_ws, min_col=3, min_row=1, max_row=details_ws.max_row)
+            cats = Reference(details_ws, min_col=1, min_row=2, max_row=details_ws.max_row)
             chart.add_data(data, titles_from_data=True)
             chart.set_categories(cats)
             ws.add_chart(chart, "A14")
@@ -184,9 +195,8 @@ def _write_crack_detail_sheet(writer: pd.ExcelWriter, crack_df: pd.DataFrame) ->
         cell.alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[1].height = 24
 
-    widths = [12, 18, 20, 16, 18]
-    for idx, width in enumerate(widths, start=1):
-        ws.column_dimensions[chr(64 + idx)].width = width
+    for column, width in zip(("A", "B", "C", "D", "E"), (12, 18, 20, 16, 18)):
+        ws.column_dimensions[column].width = width
 
     for row in ws.iter_rows(min_row=2):
         row[0].number_format = "0"
@@ -207,9 +217,9 @@ def _write_crack_detail_sheet(writer: pd.ExcelWriter, crack_df: pd.DataFrame) ->
             showColumnStripes=False,
         )
         ws.add_table(table)
+        ws.auto_filter.ref = f"A1:E{ws.max_row}"
 
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:E{max(ws.max_row, 1)}"
 
 
 def _write_qa_sheet(writer: pd.ExcelWriter, frame_df: pd.DataFrame) -> None:
@@ -261,18 +271,19 @@ def _write_qa_sheet(writer: pd.ExcelWriter, frame_df: pd.DataFrame) -> None:
 
 
 def export_workbook(path: Path, frame_df: pd.DataFrame, crack_df: pd.DataFrame) -> None:
-    """Export a compact, paper-facing workbook with only results, crack rows and QA."""
+    """Export only the paper summary, per-crack widths and essential QA."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        # Remove pandas' default worksheet and create sheets in the intended order.
-        default_ws = writer.book.active
-        writer.book.remove(default_ws)
         _write_crack_detail_sheet(writer, crack_df)
         _write_summary_sheet(writer, frame_df, crack_df)
         _write_qa_sheet(writer, frame_df)
 
-        # Reorder after chart references are established.
         wb = writer.book
-        wb._sheets = [wb["01_结果汇总"], wb["02_裂缝明细"], wb["03_质量检查"]]
+        intended = {"01_结果汇总", "02_裂缝明细", "03_质量检查"}
+        for worksheet in list(wb.worksheets):
+            if worksheet.title not in intended:
+                wb.remove(worksheet)
+        wb.move_sheet(wb["01_结果汇总"], offset=-1)
+        wb.active = 0
