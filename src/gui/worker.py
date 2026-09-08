@@ -3,19 +3,18 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import QThread, Signal
 
-from src.core.input import input_kind
 from src.core.pipeline import analyze_peak_frame, export_result
 
 logger = logging.getLogger(__name__)
 
 
 class AnalysisWorker(QThread):
-    """Qt thread adapter for one Ncorr + one MTS specimen pair."""
+    """One-shot worker for one Ncorr + one MTS specimen pair."""
 
-    progress = Signal(int, int)
-    log = Signal(str)
+    completed = Signal(dict)
     failed = Signal(str)
 
     def __init__(
@@ -24,66 +23,49 @@ class AnalysisWorker(QThread):
         mts_path: Path,
         out_dir: Path,
         config: dict,
-        dic_frame0_mts_time_s: float,
     ) -> None:
         super().__init__()
         self.data_path = Path(data_path)
         self.mts_path = Path(mts_path)
         self.out_dir = Path(out_dir)
         self.config = config
-        self.dic_frame0_mts_time_s = float(dic_frame0_mts_time_s)
-        self._running = True
 
-    def stop(self) -> None:
-        self._running = False
+    @staticmethod
+    def _number(row, key: str) -> float | None:
+        value = row.get(key)
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if np.isfinite(number) else None
 
     def run(self) -> None:
         try:
             self.out_dir.mkdir(parents=True, exist_ok=True)
-            self.log.emit(f"▶ {self.data_path.name} [{input_kind(self.data_path)}]")
-            self.log.emit(f"MTS: {self.mts_path.name}")
-
             result = analyze_peak_frame(
                 self.data_path,
                 self.mts_path,
                 self.config,
-                dic_frame0_mts_time_s=self.dic_frame0_mts_time_s,
-                should_continue=lambda: self._running,
             )
-            if result is None:
-                self.log.emit("Analysis cancelled.")
-                return
-
-            selection = result.selection
-            sign_text = "+" if selection.mts_tension_sign > 0 else "-"
-            self.log.emit(
-                "MTS peak | "
-                f"force={selection.mts_peak_force_N:.6g} N; "
-                f"t={selection.mts_peak_time_s:.3f} s; "
-                f"tension sign={sign_text}"
-            )
-            self.log.emit(
-                "Selected DIC | "
-                f"Frame={selection.selected_frame_id}; "
-                f"DIC t={selection.selected_dic_time_s:.3f} s; "
-                f"MTS-equivalent t={selection.selected_mts_time_s:.3f} s; "
-                f"Δt={selection.match_error_s:+.3f} s"
-            )
+            output = export_result(result, self.out_dir)
 
             row = result.frame_df.iloc[0]
-            step = row.get("dic_step_px")
-            step_text = "n/a" if step is None else f"{float(step):.6g}"
-            self.log.emit(
-                "Scale | "
-                f"{float(row['pixel_size_mm']):.6g} mm/px; "
-                f"DIC step={step_text} px; "
-                f"grid={float(row['dic_point_spacing_mm']):.6g} mm/point"
+            self.completed.emit(
+                {
+                    "output_path": str(output),
+                    "peak_force_N": result.selection.mts_peak_force_N,
+                    "peak_time_s": result.selection.mts_peak_time_s,
+                    "selected_frame": result.selection.selected_frame_id,
+                    "selected_dic_time_s": result.selection.selected_dic_time_s,
+                    "match_error_s": result.selection.match_error_s,
+                    "crack_count": int(row.get("crack_count", 0) or 0),
+                    "mean_width_um": self._number(row, "Crack_width_mean_um"),
+                    "median_width_um": self._number(row, "Crack_width_median_um"),
+                    "p95_width_um": self._number(row, "Crack_width_95_um"),
+                    "max_width_um": self._number(row, "Crack_width_max_um"),
+                    "cod_status": str(row.get("cod_status", "unknown")),
+                }
             )
-
-            output = export_result(result, self.out_dir)
-            self.log.emit(f"✓ peak-stress frame COD status={result.cod_status}")
-            self.log.emit(f"Saved: {output.name}")
-            self.progress.emit(1, 1)
         except Exception as exc:
             logger.exception("Peak-frame analysis failed")
             self.failed.emit(str(exc))
