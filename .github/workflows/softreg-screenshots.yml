@@ -6,6 +6,12 @@ on:
     paths:
       - ".github/workflows/softreg-screenshots.yml"
       - "tools/softreg_capture.py"
+      - "main.py"
+      - "src/gui/**"
+      - "src/core/**"
+      - "config/**"
+      - "requirements.txt"
+      - "requirements-dev.txt"
 
 permissions:
   contents: read
