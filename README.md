@@ -23,6 +23,10 @@ robust linear fits extrapolated to the crack plane
         ↓
 COD crack width
         ↓
+per-crack representative width
+        ↓
+equal-weight specimen crack statistics
+        ↓
 Excel + QA
 ```
 
@@ -103,6 +107,40 @@ Crack location is detected from maximum principal tensile strain:
 
 For each crack-skeleton point, CrackVision estimates the local crack normal, samples U/V on both sides, fits the local displacement field on each crack face and extrapolates both fits to the crack plane. COD is the normal displacement discontinuity.
 
+For one accepted crack, multiple local COD values are obtained along the crack. The crack's representative width is:
+
+```text
+W_crack = median(local COD values along that crack)
+```
+
+This value is exported as `W_median_um` in `02_Crack_Details`.
+
+## Equal-weight specimen statistics
+
+The specimen-level crack-width statistics use **one representative width per accepted crack**. Every crack has equal statistical weight, regardless of crack length or how many local COD samples it contains.
+
+If the selected peak-stress frame contains crack representative widths:
+
+```text
+w1, w2, ..., wn
+```
+
+then the primary paper-facing average crack width is:
+
+```text
+Crack_width_mean_um = mean(w1, w2, ..., wn)
+```
+
+and the software also exports:
+
+```text
+Crack_width_median_um
+Crack_width_95_um
+Crack_width_max_um
+```
+
+For backward compatibility, frame-level `W_avg_um`, `W_median_um`, `W_95_um`, and `W_max_um` are aliases of the same **equal-weight per-crack representative-width distribution**. They are no longer calculated by pooling every local COD sample together.
+
 Failed measurements remain `NaN`; they are never converted to fake `0 μm` values.
 
 ## Output
@@ -113,11 +151,11 @@ Each specimen creates one workbook:
 <specimen>_CrackVision.xlsx
 ├─ 00_READ_ME
 ├─ 01_Frame_Summary     # exactly one selected peak-stress frame
-├─ 02_Crack_Details     # all accepted cracks in that frame
+├─ 02_Crack_Details     # one row per accepted crack
 └─ 03_QA                # MTS/DIC matching + measurement QA
 ```
 
-Important columns include:
+Recommended paper-facing columns in `01_Frame_Summary`:
 
 ```text
 MTS_peak_force_N
@@ -125,11 +163,24 @@ MTS_peak_time_s
 DIC_selected_time_s
 frame_match_error_s
 crack_count
-W_median_um
+Crack_width_mean_um
+Crack_width_median_um
+Crack_width_95_um
+Crack_width_max_um
+cod_status
+```
+
+For the full list of individual cracks, use `02_Crack_Details`:
+
+```text
+Crack_ID
+Length_mm
+COD_samples
+W_median_um   # representative width of this crack
 W_avg_um
 W_95_um
 W_max_um
-cod_status
+Fit_R2_median
 ```
 
 ## Run
@@ -176,7 +227,7 @@ CrackVision-DIC/
 │  │  ├─ io_ncorr.py      # legacy Ncorr MAT compatibility
 │  │  ├─ models.py
 │  │  ├─ physics.py
-│  │  ├─ pipeline.py      # MTS peak → selected frame → COD
+│  │  ├─ pipeline.py      # MTS peak → selected frame → COD → equal-weight summary
 │  │  └─ export.py
 │  └─ gui/
 │     ├─ main_window.py
