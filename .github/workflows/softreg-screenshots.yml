@@ -27,7 +27,7 @@ jobs:
       - name: Install Linux GUI runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 fonts-noto-cjk
+          sudo apt-get install -y libegl1 libgl1 fonts-noto-cjk
 
       - name: Install Python dependencies
         run: |
@@ -41,9 +41,10 @@ jobs:
       - name: Run CrackVision-DIC and capture real screenshots
         env:
           PYTHONPATH: ${{ github.workspace }}
+          QT_QPA_PLATFORM: offscreen
         run: |
           mkdir -p artifacts/softreg
-          xvfb-run -a python tools/softreg_capture.py --out artifacts/softreg
+          python tools/softreg_capture.py --out artifacts/softreg
 
       - name: Archive exact source snapshot
         run: git archive --format=zip --output=artifacts/softreg/CrackVision-DIC-source.zip HEAD
