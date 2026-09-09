@@ -13,10 +13,10 @@ from src.gui.main_window import MainWindow
 
 
 def build_demo_pair(root: Path) -> tuple[Path, Path]:
-    demo_dir = root / "demo_input"
-    demo_dir.mkdir(parents=True, exist_ok=True)
-    h5_path = demo_dir / "ECC_DIC_Demo.h5"
-    mts_path = demo_dir / "ECC_MTS_Demo.csv"
+    data_dir = root / "input_data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    h5_path = data_dir / "ECC_Specimen_A01.h5"
+    mts_path = data_dir / "ECC_Specimen_A01_MTS.csv"
 
     n_frames, h, w = 5, 121, 281
     u = np.zeros((n_frames, h, w), dtype=np.float64)
@@ -43,8 +43,6 @@ def build_demo_pair(root: Path) -> tuple[Path, Path]:
     )
     peak_frame = 2
 
-    # Representative ECC multiple cracking at peak load. Principal strain
-    # provides crack locations; displacement jumps provide the COD values.
     crack_spans = (
         (14, 108),
         (18, 104),
@@ -135,20 +133,16 @@ def main() -> int:
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
 
-    # 01: clean launch state.
     grab(window, out_dir / "01_软件启动界面.png", app)
 
-    # 02: first input loaded, showing the normal intermediate state.
     window._apply_data_file(data_path)
     window._refresh_ready_state()
     grab(window, out_dir / "02_DIC数据载入.png", app)
 
-    # 03: both inputs loaded and the application ready for analysis.
     window._apply_mts_file(mts_path)
     window._refresh_ready_state()
     grab(window, out_dir / "03_双数据载入就绪.png", app)
 
-    # 04: start the real analysis and capture its running state.
     window._start()
     window.show()
     app.processEvents()
@@ -164,7 +158,6 @@ def main() -> int:
     if window.worker is not None:
         raise TimeoutError("CrackVision-DIC analysis did not finish within 60 s")
 
-    # 05: final result state with peak-load matching and crack statistics.
     grab(window, out_dir / "05_峰值帧裂缝分析完成.png", app)
 
     output_path = window.output_path
