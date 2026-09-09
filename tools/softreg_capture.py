@@ -113,10 +113,10 @@ def build_demo_pair(root: Path) -> tuple[Path, Path]:
     return h5_path, mts_path
 
 
-def grab(window: MainWindow, path: Path, app: QApplication) -> None:
+def grab(window: MainWindow, path: Path, app: QApplication, delay: float = 0.20) -> None:
     window.show()
     app.processEvents()
-    time.sleep(0.25)
+    time.sleep(delay)
     app.processEvents()
     pixmap = window.grab()
     if not pixmap.save(str(path), "PNG"):
@@ -135,17 +135,27 @@ def main() -> int:
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
 
+    # 01: clean launch state.
     grab(window, out_dir / "01_软件启动界面.png", app)
 
-    window.data_file = data_path
-    window.mts_file = mts_path
-    window.data_edit.setText(data_path.name)
-    window.mts_edit.setText(mts_path.name)
+    # 02: first input loaded, showing the normal intermediate state.
+    window._apply_data_file(data_path)
     window._refresh_ready_state()
-    grab(window, out_dir / "02_数据载入就绪.png", app)
+    grab(window, out_dir / "02_DIC数据载入.png", app)
 
-    # Exercise the same GUI path used by a normal desktop run.
+    # 03: both inputs loaded and the application ready for analysis.
+    window._apply_mts_file(mts_path)
+    window._refresh_ready_state()
+    grab(window, out_dir / "03_双数据载入就绪.png", app)
+
+    # 04: start the real analysis and capture its running state.
     window._start()
+    window.show()
+    app.processEvents()
+    pixmap = window.grab()
+    if not pixmap.save(str(out_dir / "04_峰值帧分析执行中.png"), "PNG"):
+        raise RuntimeError("Failed to save running-state screenshot")
+
     deadline = time.time() + 60.0
     while window.worker is not None and time.time() < deadline:
         app.processEvents()
@@ -154,7 +164,8 @@ def main() -> int:
     if window.worker is not None:
         raise TimeoutError("CrackVision-DIC analysis did not finish within 60 s")
 
-    grab(window, out_dir / "03_峰值帧裂缝分析完成.png", app)
+    # 05: final result state with peak-load matching and crack statistics.
+    grab(window, out_dir / "05_峰值帧裂缝分析完成.png", app)
 
     output_path = window.output_path
     if output_path is None or not output_path.exists():
@@ -168,6 +179,13 @@ def main() -> int:
         "output_workbook": str(output_path.name),
         "status_text": window.status_label.text(),
         "result_text": window.result_label.text(),
+        "screenshots": [
+            "01_软件启动界面.png",
+            "02_DIC数据载入.png",
+            "03_双数据载入就绪.png",
+            "04_峰值帧分析执行中.png",
+            "05_峰值帧裂缝分析完成.png",
+        ],
     }
     (out_dir / "run_evidence.json").write_text(
         json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8"
