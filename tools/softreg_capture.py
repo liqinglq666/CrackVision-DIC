@@ -18,7 +18,7 @@ def build_demo_pair(root: Path) -> tuple[Path, Path]:
     h5_path = demo_dir / "ECC_DIC_Demo.h5"
     mts_path = demo_dir / "ECC_MTS_Demo.csv"
 
-    n_frames, h, w = 5, 101, 151
+    n_frames, h, w = 5, 121, 281
     u = np.zeros((n_frames, h, w), dtype=np.float64)
     v = np.zeros_like(u)
     exx = np.full_like(u, 1.0e-5)
@@ -26,14 +26,41 @@ def build_demo_pair(root: Path) -> tuple[Path, Path]:
     exy = np.zeros_like(u)
     mask = np.ones((n_frames, h, w), dtype=np.uint8)
 
-    crack_x = (35, 75, 115)
-    jumps_mm = (0.040, 0.060, 0.080)
+    crack_x = (20, 40, 61, 82, 103, 124, 145, 166, 187, 208, 229, 250)
+    jumps_mm = (
+        0.045,
+        0.055,
+        0.060,
+        0.065,
+        0.070,
+        0.075,
+        0.080,
+        0.085,
+        0.090,
+        0.100,
+        0.115,
+        0.130,
+    )
     peak_frame = 2
 
-    # Create three vertical fine cracks. Principal strain locates the crack
-    # geometry; cumulative horizontal displacement jumps provide the COD.
-    for x in crack_x:
-        exx[peak_frame, 14:87, x] = 0.020
+    # Representative ECC multiple cracking at peak load. Principal strain
+    # provides crack locations; displacement jumps provide the COD values.
+    crack_spans = (
+        (14, 108),
+        (18, 104),
+        (12, 110),
+        (16, 106),
+        (11, 109),
+        (20, 102),
+        (13, 108),
+        (17, 105),
+        (12, 111),
+        (19, 103),
+        (15, 107),
+        (18, 104),
+    )
+    for x, (y0, y1) in zip(crack_x, crack_spans):
+        exx[peak_frame, y0:y1, x] = 0.020
 
     cumulative = np.zeros((h, w), dtype=np.float64)
     running = 0.0
@@ -45,8 +72,6 @@ def build_demo_pair(root: Path) -> tuple[Path, Path]:
     cumulative[:, last:] = running
     u[peak_frame] = cumulative
 
-    # Non-peak frames carry smaller deformations to keep the demo physically
-    # plausible while preserving frame-2 as the MTS-selected analysis target.
     u[1] = cumulative * 0.25
     u[3] = cumulative * 1.10
     u[4] = cumulative * 1.20
@@ -119,8 +144,7 @@ def main() -> int:
     window._refresh_ready_state()
     grab(window, out_dir / "02_数据载入就绪.png", app)
 
-    # Exercise the real GUI workflow: MainWindow -> AnalysisWorker -> pipeline ->
-    # CrackPhysicsEngine -> Excel exporter -> GUI completed signal.
+    # Exercise the same GUI path used by a normal desktop run.
     window._start()
     deadline = time.time() + 60.0
     while window.worker is not None and time.time() < deadline:
@@ -136,7 +160,6 @@ def main() -> int:
     if output_path is None or not output_path.exists():
         raise RuntimeError("GUI run finished without an exported workbook")
 
-    # Store machine-readable evidence next to the screenshots.
     evidence = {
         "software": "CrackVision-DIC",
         "run_mode": "GitHub Actions real GUI + core analysis run",
@@ -150,7 +173,6 @@ def main() -> int:
         json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    # Copy the generated workbook into the artifact root for registration QA.
     workbook_copy = out_dir / output_path.name
     if output_path.resolve() != workbook_copy.resolve():
         workbook_copy.write_bytes(output_path.read_bytes())
