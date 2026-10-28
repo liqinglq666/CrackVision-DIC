@@ -70,26 +70,6 @@ flowchart TD
     R --> S[Paper-ready Excel]
 ```
 
-核心计算链：
-
-```text
-MTS Peak State
-    ↓
-DIC Peak Frame
-    ↓
-Maximum Principal Tensile Strain
-    ↓
-Crack Geometry
-    ↓
-Displacement Jump along Local Normal
-    ↓
-COD
-    ↓
-Crack-wise Representative Width
-    ↓
-Equal-weight Specimen Statistics
-```
-
 ---
 
 # 1. 峰值拉应力帧选择 · Peak-stress Frame Selection
@@ -672,17 +652,6 @@ Metadata Source
 
 主界面围绕一次标准分析任务设计。
 
-```mermaid
-flowchart TD
-    A[选择 Ncorr H5 / MAT] --> C[分析峰值拉应力帧]
-    B[选择 MTS CSV] --> C
-    C --> D[定位 Peak Time]
-    D --> E[匹配最近 DIC Frame]
-    E --> F[计算全部有效裂缝 COD]
-    F --> G[显示核心结果]
-    G --> H[保存 Excel]
-```
-
 操作流程：
 
 ```text
@@ -745,18 +714,6 @@ Input     → 选择目标 DIC frame
 Reader    → 读取 Ncorr 数据
 Physics   → 裂缝识别 + COD
 Export    → Paper-ready Excel
-```
-
-数据与职责边界：
-
-```text
-GUI       → 用户交互
-MTS       → Force / Time
-Reader    → DIC fields + metadata
-FrameData → 单帧物理数据契约
-Physics   → crack detection + COD
-Pipeline  → 计算流程编排
-Export    → workbook formatting
 ```
 
 ---
