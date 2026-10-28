@@ -20,6 +20,8 @@
 
 软件读取 **MTS 原始拉伸数据**与 **Ncorr DIC 数据**，自动定位 Peak Tensile Stress 对应时刻，匹配最近的 DIC frame，并在该帧中完成裂缝识别与 **Crack Opening Displacement (COD)** 计算。
 
+当前版本针对峰值拉应力对应的单帧 DIC 数据，不包含裂缝随时间演化的动力学分析。
+
 最终得到：
 
 - 峰值拉应力对应的 DIC frame；
